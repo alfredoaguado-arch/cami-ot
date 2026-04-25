@@ -291,8 +291,23 @@
       <button class="btn-submit" id="btn-send" onclick="submitOT()">Sheets + PDF</button>
       <button class="btn-pdf" id="btn-solo-sheets" onclick="soloSheets()">Solo Sheets</button>
       <button class="btn-pdf" onclick="generatePDF()">Solo PDF</button>
-      <button class="btn-pdf" type="button" onclick="document.getElementById('pdf-import').click()">Cargar OT desde PDF</button>
+      <button class="btn-pdf" type="button" onclick="abrirSelectorDrive()">Cargar OT desde Drive</button>
+      <button class="btn-pdf" type="button" onclick="document.getElementById('pdf-import').click()">Cargar PDF local</button>
       <input type="file" id="pdf-import" accept="application/pdf" style="display:none" onchange="cargarOTdesdePDF(event)"/>
+    </div>
+    
+    <!-- Modal: Selector de OTs en Drive -->
+    <div id="drive-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center;padding:1rem;">
+      <div style="background:#fff;border-radius:10px;max-width:600px;width:100%;max-height:80vh;display:flex;flex-direction:column;overflow:hidden;">
+        <div style="padding:1rem 1.5rem;border-bottom:1px solid #e5e3da;display:flex;justify-content:space-between;align-items:center;">
+          <strong style="font-family:'Courier New',monospace;">Selecciona una OT</strong>
+          <button onclick="cerrarSelectorDrive()" style="border:none;background:none;font-size:1.5rem;cursor:pointer;line-height:1;">×</button>
+        </div>
+        <input type="text" id="drive-search" placeholder="Buscar por nombre o folio..." oninput="filtrarListaDrive()" style="margin:0.75rem 1.5rem;padding:0.6rem 0.8rem;border:1px solid #d3d1c7;border-radius:6px;font-family:'Courier New',monospace;"/>
+        <div id="drive-list" style="overflow-y:auto;padding:0 1.5rem 1rem;flex:1;font-family:'Courier New',monospace;font-size:0.9rem;">
+          <div style="padding:2rem;text-align:center;color:#888;">Cargando...</div>
+        </div>
+      </div>
     </div>
     <div class="toast" id="toast"></div>
 
@@ -847,6 +862,112 @@ async function submitOT() {
     showToast('Error: ' + err.message, 'err');
     btn.disabled = false; btn.textContent = 'Sheets + PDF';
   }
+}
+
+// ── Selector de OTs desde Drive ───────────────────────────────
+let _driveCache = [];
+
+async function abrirSelectorDrive() {
+  const token = getToken();
+  if (!token) return;
+  
+  document.getElementById('drive-modal').style.display = 'flex';
+  document.getElementById('drive-search').value = '';
+  document.getElementById('drive-list').innerHTML = '<div style="padding:2rem;text-align:center;color:#888;">Cargando lista de Drive...</div>';
+  
+  try {
+    const url = `${SCRIPT_URL}?accion=listarOTs&token=${encodeURIComponent(token)}`;
+    const res = await fetch(url);
+    const data = await handleResponse(res);
+    
+    if (!data || data.ok === false) {
+      document.getElementById('drive-list').innerHTML = '<div style="padding:2rem;color:#A32D2D;">Error: ' + ((data && data.error) || 'desconocido') + '</div>';
+      return;
+    }
+    
+    _driveCache = data.archivos || [];
+    renderListaDrive(_driveCache);
+    
+  } catch (err) {
+    document.getElementById('drive-list').innerHTML = '<div style="padding:2rem;color:#A32D2D;">Error de red: ' + err.message + '</div>';
+  }
+}
+
+function cerrarSelectorDrive() {
+  document.getElementById('drive-modal').style.display = 'none';
+}
+
+function renderListaDrive(lista) {
+  const cont = document.getElementById('drive-list');
+  if (lista.length === 0) {
+    cont.innerHTML = '<div style="padding:2rem;text-align:center;color:#888;">No se encontraron OTs.</div>';
+    return;
+  }
+  
+  cont.innerHTML = lista.map(f => {
+    const fecha = new Date(f.fecha).toLocaleDateString('es-MX');
+    return `<div onclick="seleccionarPdfDrive('${f.id}')" style="padding:0.7rem 0.5rem;border-bottom:1px solid #e5e3da;cursor:pointer;display:flex;justify-content:space-between;gap:1rem;" onmouseover="this.style.background='#f5f3ee'" onmouseout="this.style.background='transparent'">
+      <span style="font-weight:bold;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(f.name)}</span>
+      <span style="color:#888;font-size:0.85rem;flex-shrink:0;">${fecha}</span>
+    </div>`;
+  }).join('');
+}
+
+function filtrarListaDrive() {
+  const q = document.getElementById('drive-search').value.toLowerCase().trim();
+  if (!q) { renderListaDrive(_driveCache); return; }
+  const filtrada = _driveCache.filter(f => f.name.toLowerCase().indexOf(q) >= 0);
+  renderListaDrive(filtrada);
+}
+
+async function seleccionarPdfDrive(fileId) {
+  const token = getToken();
+  if (!token) return;
+  
+  const cont = document.getElementById('drive-list');
+  cont.innerHTML = '<div style="padding:2rem;text-align:center;color:#888;">Descargando PDF...</div>';
+  
+  try {
+    const url = `${SCRIPT_URL}?accion=descargarOT&fileId=${encodeURIComponent(fileId)}&token=${encodeURIComponent(token)}`;
+    const res = await fetch(url);
+    const data = await handleResponse(res);
+    
+    if (!data || data.ok === false) {
+      cont.innerHTML = '<div style="padding:2rem;color:#A32D2D;">Error: ' + ((data && data.error) || 'desconocido') + '</div>';
+      return;
+    }
+    
+    // Convertir base64 a ArrayBuffer y parsear con PDF.js (mismo flujo que upload local)
+    const base64 = data.base64.replace(/^data:application\/pdf;base64,/, '');
+    const bin = atob(base64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    
+    const loadingTask = pdfjsLib.getDocument({ data: bytes.buffer });
+    const pdf = await loadingTask.promise;
+    const metadata = await pdf.getMetadata();
+    const subject = (metadata.info && metadata.info.Subject) || '';
+    const PREFIX = 'CAMI_OT_DATA::';
+    
+    if (subject.indexOf(PREFIX) !== 0) {
+      cont.innerHTML = '<div style="padding:2rem;color:#A32D2D;">Este PDF no tiene metadata de CAMI.</div>';
+      return;
+    }
+    
+    const datos = JSON.parse(subject.substring(PREFIX.length));
+    aplicarDatosAlFormulario(datos);
+    cerrarSelectorDrive();
+    showToast('Datos cargados desde <b>' + escapeHtml(data.name) + '</b>. Modifica lo necesario y guarda con folio nuevo.', 'ok');
+    
+  } catch (err) {
+    cont.innerHTML = '<div style="padding:2rem;color:#A32D2D;">Error: ' + escapeHtml(err.message) + '</div>';
+  }
+}
+
+function escapeHtml(s) {
+  const div = document.createElement('div');
+  div.textContent = String(s || '');
+  return div.innerHTML;
 }
 
 // ── Cargar OT desde PDF (lee metadata embebida) ───────────────
