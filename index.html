@@ -136,13 +136,8 @@
 
     <!-- Settings -->
     <details class="settings-box" id="cfg">
-      <summary>⚙ Configurar conexion y carpeta</summary>
+      <summary>⚙ Configurar carpeta de PDF</summary>
       <div class="inner">
-        <div>
-          <label class="fl">URL de Google Apps Script</label>
-          <input type="url" id="sheet-url" value="https://script.google.com/macros/s/AKfycbxvyPrrjqLboP27WszT2DQFwBtFUohagmV-xIMO0eRy_VR23oIcdX1CeOAcY1hmu8Iy/exec" placeholder="https://script.google.com/macros/s/.../exec"/>
-          <p class="help">Se guarda automaticamente. <a href="https://developers.google.com/apps-script/guides/web" target="_blank">Ver documentacion →</a></p>
-        </div>
         <div>
           <label class="fl">Carpeta del proyecto (referencia)</label>
           <input type="text" id="pdf-folder" placeholder="Ej: Proyectos / Cliente XYZ / OTs"/>
@@ -304,16 +299,57 @@
 <script>
 const { jsPDF } = window.jspdf;
 
+// ── Config ───────────────────────────────────────────────────
+const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxvyPrrjqLboP27WszT2DQFwBtFUohagmV-xIMO0eRy_VR23oIcdX1CeOAcY1hmu8Iy/exec';
+
+// ── Token de sesion ──────────────────────────────────────────
+function getToken() {
+  const raw = sessionStorage.getItem('cami_session');
+  if (!raw) {
+    redirigirALogin();
+    return null;
+  }
+  try {
+    const session = JSON.parse(raw);
+    if (!session.token) {
+      redirigirALogin();
+      return null;
+    }
+    return session.token;
+  } catch(e) {
+    return raw;
+  }
+}
+
+function redirigirALogin() {
+  alert('Sesion expirada. Seras redirigido al login.');
+  setTimeout(() => {
+    window.location.href = 'https://alfredoaguado-arch.github.io/cami-app2/';
+  }, 500);
+}
+
+async function handleResponse(response) {
+  const text = await response.text();
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch (e) {
+    return { ok: text.startsWith('OK') || text.indexOf('"ok":true') >= 0, raw: text };
+  }
+  if (data && data.ok === false && data.error && data.error.indexOf('Sesion') >= 0) {
+    redirigirALogin();
+  }
+  return data;
+}
+
 // ── Init ─────────────────────────────────────────────────────
 document.getElementById('f-fecha').value = new Date().toISOString().split('T')[0];
-  const DEFAULT_URL = 'https://script.google.com/macros/s/AKfycbxvyPrrjqLboP27WszT2DQFwBtFUohagmV-xIMO0eRy_VR23oIcdX1CeOAcY1hmu8Iy/exec';
-  document.getElementById('sheet-url').value = DEFAULT_URL;
-['ot_sheet_url','ot_pdf_folder'].forEach(key => {
-  const elId = key === 'ot_sheet_url' ? 'sheet-url' : 'pdf-folder';
-  const v = localStorage.getItem(key);
-  if (v) document.getElementById(elId).value = v;
-  document.getElementById(elId).addEventListener('input', function(){ localStorage.setItem(key, this.value); });
-});
+
+// Solo restaurar la carpeta del PDF (la URL ya no es editable)
+const folderEl = document.getElementById('pdf-folder');
+const folderSaved = localStorage.getItem('ot_pdf_folder');
+if (folderSaved) folderEl.value = folderSaved;
+folderEl.addEventListener('input', function(){ localStorage.setItem('ot_pdf_folder', this.value); });
 
 // ── Checklist data per stage ──────────────────────────────────
 const CHECKLISTS = {
@@ -684,10 +720,11 @@ function generatePDF() {
 }
 
 // ── Submit ────────────────────────────────────────────────────
-function soloSheets() {
-  const url = (document.getElementById('sheet-url') ? document.getElementById('sheet-url').value.trim() : '') || DEFAULT_URL;
-  if (!url) { document.getElementById('cfg').open=true; showToast('Primero configura la URL de Google Apps Script arriba','err'); return; }
-  const btn = document.getElementById('btn-send');
+async function soloSheets() {
+  const token = getToken();
+  if (!token) return;
+  
+  const soloBtn = document.getElementById('btn-solo-sheets');
   const d = getFormData();
   const payload = {
     ot:          d.ot,
@@ -698,29 +735,36 @@ function soloSheets() {
     entrega:     d.entrega,
     tiempo:      d.tiempo,
     responsable: d.responsable,
-    timestamp:   d.timestamp
+    timestamp:   d.timestamp,
+    token:       token
   };
   const formData = new FormData();
   Object.keys(payload).forEach(k => formData.append(k, payload[k]));
-  const soloBtn = document.getElementById('btn-solo-sheets');
   soloBtn.disabled = true; soloBtn.textContent = 'Enviando...';
-  fetch(url, { method:'POST', body: formData })
-    .then(() => {
-      showToast('Enviado correctamente a Google Sheets.','ok');
-      soloBtn.textContent = 'Listo';
-      setTimeout(()=>{ soloBtn.disabled=false; soloBtn.textContent='Solo Sheets'; }, 3000);
-    })
-    .catch(err => {
-      showToast('Error: '+err.message,'err');
-      soloBtn.disabled=false; soloBtn.textContent='Solo Sheets';
-    });
+  
+  try {
+    const res = await fetch(SCRIPT_URL, { method:'POST', body: formData });
+    const data = await handleResponse(res);
+    if (data && data.ok === false) {
+      showToast('Error: ' + (data.error || 'Desconocido'), 'err');
+      soloBtn.disabled = false; soloBtn.textContent = 'Solo Sheets';
+      return;
+    }
+    showToast('Enviado correctamente a Google Sheets.', 'ok');
+    soloBtn.textContent = 'Listo';
+    setTimeout(() => { soloBtn.disabled = false; soloBtn.textContent = 'Solo Sheets'; }, 3000);
+  } catch (err) {
+    showToast('Error: ' + err.message, 'err');
+    soloBtn.disabled = false; soloBtn.textContent = 'Solo Sheets';
+  }
 }
 
-function submitOT() {
-  const url = document.getElementById('sheet-url').value.trim() || 'https://script.google.com/macros/s/AKfycbxvyPrrjqLboP27WszT2DQFwBtFUohagmV-xIMO0eRy_VR23oIcdX1CeOAcY1hmu8Iy/exec';
-  if (!url) { document.getElementById('cfg').open=true; showToast('Primero configura la URL de Google Apps Script arriba','err'); return; }
+async function submitOT() {
+  const token = getToken();
+  if (!token) return;
+  
   const btn = document.getElementById('btn-send');
-  btn.disabled=true; btn.textContent='Enviando...';
+  btn.disabled = true; btn.textContent = 'Enviando...';
   const d = getFormData();
   const payload = {
     ot:          d.ot,
@@ -731,23 +775,29 @@ function submitOT() {
     entrega:     d.entrega,
     tiempo:      d.tiempo,
     responsable: d.responsable,
-    timestamp:   d.timestamp
+    timestamp:   d.timestamp,
+    token:       token
   };
 
   const formData = new FormData();
   Object.keys(payload).forEach(k => formData.append(k, payload[k]));
 
-  fetch(url, { method:'POST', body: formData })
-    .then(() => {
-      const fname = generatePDF();
-      showToast('Enviado a Google Sheets.<br>PDF guardado como: <b>'+fname+'</b>','ok');
-      btn.textContent='Listo';
-      setTimeout(()=>{ btn.disabled=false; btn.textContent='Enviar a Sheets + Guardar PDF'; },3000);
-    })
-    .catch(err => {
-      showToast('Error: '+err.message,'err');
-      btn.disabled=false; btn.textContent='Enviar a Sheets + Guardar PDF';
-    });
+  try {
+    const res = await fetch(SCRIPT_URL, { method:'POST', body: formData });
+    const data = await handleResponse(res);
+    if (data && data.ok === false) {
+      showToast('Error: ' + (data.error || 'Desconocido'), 'err');
+      btn.disabled = false; btn.textContent = 'Enviar a Sheets + Guardar PDF';
+      return;
+    }
+    const fname = generatePDF();
+    showToast('Enviado a Google Sheets.<br>PDF guardado como: <b>' + fname + '</b>', 'ok');
+    btn.textContent = 'Listo';
+    setTimeout(() => { btn.disabled = false; btn.textContent = 'Enviar a Sheets + Guardar PDF'; }, 3000);
+  } catch (err) {
+    showToast('Error: ' + err.message, 'err');
+    btn.disabled = false; btn.textContent = 'Enviar a Sheets + Guardar PDF';
+  }
 }
 </script>
 </body>
