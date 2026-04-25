@@ -6,6 +6,7 @@
 <title>Orden de Trabajo — CAMI</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <style>
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
   body{font-family:'Courier New',monospace;background:#f5f3ee;color:#1a1a18;min-height:100vh;padding:2rem 1rem}
@@ -290,6 +291,8 @@
       <button class="btn-submit" id="btn-send" onclick="submitOT()">Sheets + PDF</button>
       <button class="btn-pdf" id="btn-solo-sheets" onclick="soloSheets()">Solo Sheets</button>
       <button class="btn-pdf" onclick="generatePDF()">Solo PDF</button>
+      <button class="btn-pdf" type="button" onclick="document.getElementById('pdf-import').click()">Cargar OT desde PDF</button>
+      <input type="file" id="pdf-import" accept="application/pdf" style="display:none" onchange="cargarOTdesdePDF(event)"/>
     </div>
     <div class="toast" id="toast"></div>
 
@@ -298,6 +301,11 @@
 
 <script>
 const { jsPDF } = window.jspdf;
+
+// PDF.js worker (necesario para leer PDFs)
+if (window.pdfjsLib) {
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+}
 
 // ── Config ───────────────────────────────────────────────────
 const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxvyPrrjqLboP27WszT2DQFwBtFUohagmV-xIMO0eRy_VR23oIcdX1CeOAcY1hmu8Iy/exec';
@@ -575,11 +583,23 @@ function pdfFilename(d) {
   return `${d.ot}${s?'_'+s:''}_${d.fecha}.pdf`;
 }
 
-function generatePDF() {
+function generatePDF(opts) {
+  opts = opts || {};
+  const skipSave = opts.skipSave === true;
   const d    = getFormData();
   const doc  = new jsPDF({ unit:'mm', format:'letter' });
   const W    = doc.internal.pageSize.getWidth();
   const ORANGE=[74,74,72], DARK=[26,26,24], GRAY=[136,135,128], LIGHT=[245,243,238], WHITE=[255,255,255], BLACK=[26,26,24];
+
+  // Embeber metadata (todos los campos del form en JSON)
+  // Esto permite leer el PDF luego y autocompletar el formulario
+  const metadataJSON = JSON.stringify(d);
+  doc.setProperties({
+    title: 'Orden de Trabajo - ' + (d.ot || ''),
+    subject: 'CAMI_OT_DATA::' + metadataJSON,
+    keywords: 'CAMI OT ' + (d.cliente || ''),
+    creator: 'CAMI Sistema'
+  });
 
   // ─ Header ─
   doc.setFillColor(...BLACK); doc.rect(0,0,W,26,'F');
@@ -716,7 +736,14 @@ function generatePDF() {
   doc.text('Generado: '+new Date().toLocaleString('es-MX'),14,pH-4);
   doc.text(d.ot,W-14,pH-4,{align:'right'});
 
-  const fname=pdfFilename(d); doc.save(fname); return fname;
+  const fname = pdfFilename(d);
+  if (!skipSave) doc.save(fname);
+  // Retornar info útil para submit con PDF
+  return {
+    fname: fname,
+    base64: doc.output('datauristring'),  // "data:application/pdf;base64,..."
+    doc: doc
+  };
 }
 
 // ── Submit ────────────────────────────────────────────────────
@@ -764,8 +791,21 @@ async function submitOT() {
   if (!token) return;
   
   const btn = document.getElementById('btn-send');
-  btn.disabled = true; btn.textContent = 'Enviando...';
+  btn.disabled = true; btn.textContent = 'Generando PDF...';
   const d = getFormData();
+  
+  // Generar PDF y obtener base64 (sin descargarlo todavía)
+  let pdfInfo;
+  try {
+    pdfInfo = generatePDF({ skipSave: true });
+  } catch (err) {
+    showToast('Error generando PDF: ' + err.message, 'err');
+    btn.disabled = false; btn.textContent = 'Sheets + PDF';
+    return;
+  }
+  
+  btn.textContent = 'Enviando...';
+  
   const payload = {
     ot:          d.ot,
     cliente:     d.cliente,
@@ -776,7 +816,8 @@ async function submitOT() {
     tiempo:      d.tiempo,
     responsable: d.responsable,
     timestamp:   d.timestamp,
-    token:       token
+    token:       token,
+    pdf_base64:  pdfInfo.base64
   };
 
   const formData = new FormData();
@@ -787,17 +828,124 @@ async function submitOT() {
     const data = await handleResponse(res);
     if (data && data.ok === false) {
       showToast('Error: ' + (data.error || 'Desconocido'), 'err');
-      btn.disabled = false; btn.textContent = 'Enviar a Sheets + Guardar PDF';
+      btn.disabled = false; btn.textContent = 'Sheets + PDF';
       return;
     }
-    const fname = generatePDF();
-    showToast('Enviado a Google Sheets.<br>PDF guardado como: <b>' + fname + '</b>', 'ok');
+    
+    // Descargar PDF localmente con el nombre que incluye el folio del backend
+    const folio = (data && data.folio) || d.ot;
+    pdfInfo.doc.save(folio + '.pdf');
+    
+    let msg = 'Registrado con folio <b>' + folio + '</b>';
+    if (data && data.pdf_url) {
+      msg += '<br><a href="' + data.pdf_url + '" target="_blank">Ver PDF en Drive</a>';
+    }
+    showToast(msg, 'ok');
     btn.textContent = 'Listo';
-    setTimeout(() => { btn.disabled = false; btn.textContent = 'Enviar a Sheets + Guardar PDF'; }, 3000);
+    setTimeout(() => { btn.disabled = false; btn.textContent = 'Sheets + PDF'; }, 4000);
   } catch (err) {
     showToast('Error: ' + err.message, 'err');
-    btn.disabled = false; btn.textContent = 'Enviar a Sheets + Guardar PDF';
+    btn.disabled = false; btn.textContent = 'Sheets + PDF';
   }
+}
+
+// ── Cargar OT desde PDF (lee metadata embebida) ───────────────
+async function cargarOTdesdePDF(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  
+  // Reset el input para que pueda re-seleccionar el mismo archivo
+  event.target.value = '';
+  
+  try {
+    const buffer = await file.arrayBuffer();
+    
+    // PDF.js puede leer la metadata del documento
+    const loadingTask = pdfjsLib.getDocument({ data: buffer });
+    const pdf = await loadingTask.promise;
+    const metadata = await pdf.getMetadata();
+    
+    // Buscamos nuestra metadata custom en 'subject'
+    const subject = (metadata.info && metadata.info.Subject) || '';
+    const PREFIX = 'CAMI_OT_DATA::';
+    
+    if (subject.indexOf(PREFIX) !== 0) {
+      showToast('Este PDF no fue generado por el sistema CAMI o no contiene datos.', 'err');
+      return;
+    }
+    
+    const json = subject.substring(PREFIX.length);
+    let datos;
+    try {
+      datos = JSON.parse(json);
+    } catch (e) {
+      showToast('Error: metadata corrupta en el PDF', 'err');
+      return;
+    }
+    
+    // Auto-llenar el formulario
+    aplicarDatosAlFormulario(datos);
+    showToast('Datos cargados desde PDF. Modifica lo necesario y guarda con folio nuevo.', 'ok');
+    
+  } catch (err) {
+    showToast('Error leyendo PDF: ' + err.message, 'err');
+  }
+}
+
+function aplicarDatosAlFormulario(d) {
+  // Asignaciones simples
+  if (d.ot !== undefined) document.getElementById('f-ot').value = d.ot;
+  if (d.fecha !== undefined) document.getElementById('f-fecha').value = d.fecha;
+  if (d.entrega !== undefined) document.getElementById('f-entrega').value = d.entrega;
+  if (d.status !== undefined) document.getElementById('f-status').value = d.status;
+  if (d.cliente !== undefined) document.getElementById('f-cliente').value = d.cliente;
+  if (d.responsable !== undefined) document.getElementById('f-resp').value = d.responsable;
+  if (d.etapa !== undefined) document.getElementById('f-etapa').value = d.etapa;
+  if (d.inspeccion !== undefined) document.getElementById('f-insp').value = d.inspeccion;
+  if (d.notas !== undefined) document.getElementById('f-notas').value = d.notas;
+  if (d.sig_resp_nombre !== undefined) document.getElementById('sig-resp-name').value = d.sig_resp_nombre;
+  if (d.sig_sup_nombre !== undefined) document.getElementById('sig-sup-name').value = d.sig_sup_nombre;
+  
+  // Tiempo: viene como "8 hrs" — separar
+  if (d.tiempo) {
+    const m = d.tiempo.match(/^(\d+(?:\.\d+)?)\s*(\w+)?/);
+    if (m) {
+      document.getElementById('f-tiempo').value = m[1];
+      if (m[2]) {
+        const unitEl = document.getElementById('f-tiempo-unit');
+        // Buscar opción que coincida
+        for (const opt of unitEl.options) {
+          if (opt.value === m[2] || opt.text.toLowerCase().indexOf(m[2].toLowerCase()) >= 0) {
+            unitEl.value = opt.value;
+            break;
+          }
+        }
+      }
+    }
+  }
+  
+  // Materiales: limpiar y reagregar
+  if (Array.isArray(d.materiales)) {
+    const tbody = document.getElementById('mat-body');
+    if (tbody) {
+      tbody.innerHTML = '';
+      d.materiales.forEach((m, i) => {
+        if (typeof addMaterialRow === 'function') addMaterialRow();
+        // Llenar la fila recién agregada
+        const rows = tbody.querySelectorAll('tr');
+        const tr = rows[rows.length - 1];
+        if (tr) {
+          const inputs = tr.querySelectorAll('input, select');
+          if (inputs[0] && m.descripcion) inputs[0].value = m.descripcion;
+          if (inputs[1] && m.cantidad) inputs[1].value = m.cantidad;
+          if (inputs[2] && m.unidad) inputs[2].value = m.unidad;
+        }
+      });
+    }
+  }
+  
+  // Re-renderizar checklist según etapa
+  if (typeof renderChecklist === 'function') renderChecklist();
 }
 </script>
 </body>
