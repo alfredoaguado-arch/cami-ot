@@ -230,6 +230,28 @@ textarea{resize:vertical;min-height:60px}
         <textarea id="obs" placeholder="Notas, instrucciones especiales (opcional)..." rows="3"></textarea>
       </div>
 
+      <div class="section">
+        <div class="section-title">Entregables que acompanan la OT</div>
+        <div id="entregables-wrap" style="display:flex;flex-wrap:wrap;gap:10px 24px">
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;color:#1a1a18">
+            <input type="checkbox" class="ent-chk" data-ent="Planos generales" style="width:18px;height:18px;margin:0;cursor:pointer"/>
+            Planos generales
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;color:#1a1a18">
+            <input type="checkbox" class="ent-chk" data-ent="Planos de detalle" style="width:18px;height:18px;margin:0;cursor:pointer"/>
+            Planos de detalle
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;color:#1a1a18">
+            <input type="checkbox" class="ent-chk" data-ent="Ficha tecnica" style="width:18px;height:18px;margin:0;cursor:pointer"/>
+            Ficha tecnica
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;color:#1a1a18">
+            <input type="checkbox" class="ent-chk" data-ent="Control de calidad" style="width:18px;height:18px;margin:0;cursor:pointer"/>
+            Control de calidad
+          </label>
+        </div>
+      </div>
+
       <div class="section" id="checklist-preview-section" style="display:none">
         <div class="section-title">Checklist de Calidad (referencia)</div>
         <div id="checklist-preview"></div>
@@ -633,6 +655,11 @@ function recolectar() {
     const u = inputs[2].value.trim();
     if (d || c > 0 || u) materiales.push({ descripcion: d, cantidad: c, unidad: u });
   });
+  // Entregables: capturar todos los disponibles con su estado de marca
+  const entregables = [];
+  document.querySelectorAll('.ent-chk').forEach(chk => {
+    entregables.push({ nombre: chk.dataset.ent, marcado: chk.checked });
+  });
   return {
     fecha:        document.getElementById('fecha').value,
     proyecto:     document.getElementById('proyecto').value,
@@ -643,7 +670,8 @@ function recolectar() {
     tiempo:       document.getElementById('tiempo').value.trim(),
     inspeccion:   document.getElementById('inspeccion').value.trim(),
     observaciones:document.getElementById('obs').value.trim(),
-    materiales:   materiales
+    materiales:   materiales,
+    entregables:  entregables
   };
 }
 function aplicarDatos(d) {
@@ -656,6 +684,16 @@ function aplicarDatos(d) {
   if (d.tiempo)      document.getElementById('tiempo').value = d.tiempo;
   if (d.inspeccion)  document.getElementById('inspeccion').value = d.inspeccion;
   if (d.observaciones) document.getElementById('obs').value = d.observaciones;
+  // Entregables: aplicar estado de marca por nombre
+  if (Array.isArray(d.entregables)) {
+    const map = {};
+    d.entregables.forEach(e => { map[e.nombre] = !!e.marcado; });
+    document.querySelectorAll('.ent-chk').forEach(chk => {
+      chk.checked = !!map[chk.dataset.ent];
+    });
+  } else {
+    document.querySelectorAll('.ent-chk').forEach(chk => { chk.checked = false; });
+  }
   const tbody = document.getElementById('materiales-body');
   tbody.innerHTML = '';
   if (Array.isArray(d.materiales) && d.materiales.length) d.materiales.forEach(m => addMaterial(m));
@@ -1349,6 +1387,37 @@ function construirPDF(doc, d, folio, estado, checklistSecciones, checklistRespue
   }
   y += 4;
 
+  // ── Entregables que acompanan la OT (rellena espacio en pag 1)
+  if (Array.isArray(d.entregables) && d.entregables.length) {
+    if (y > H - 60) { doc.addPage(); drawHeaderSimple(doc, W, pL, pR, folio, 2); y = 22; }
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor(74, 74, 72);
+    doc.text('ENTREGABLES QUE ACOMPANAN LA OT', pL, y);
+    doc.setDrawColor(211, 209, 199); doc.setLineWidth(0.2);
+    doc.line(pL, y + 1, pL + cW, y + 1);
+    y += 6;
+    // Layout en 2 columnas para que quepan los 4 (o N) en una banda compacta
+    doc.setTextColor(0, 0, 0); doc.setFont('helvetica', 'normal'); doc.setFontSize(10);
+    const colW = cW / 2;
+    d.entregables.forEach((e, i) => {
+      const col = i % 2;
+      const row = Math.floor(i / 2);
+      const cx = pL + col * colW;
+      const cy = y + row * 9;
+      // Checkbox
+      doc.setDrawColor(74, 74, 72); doc.setLineWidth(0.3);
+      doc.rect(cx + 2, cy - 3.5, 4.5, 4.5);
+      if (e.marcado) {
+        doc.setLineWidth(0.6);
+        doc.line(cx + 2.8, cy - 1.4, cx + 3.8, cy - 0.4);
+        doc.line(cx + 3.8, cy - 0.4, cx + 5.7, cy - 2.7);
+        doc.setLineWidth(0.3);
+      }
+      doc.text(String(e.nombre || ''), cx + 10, cy);
+    });
+    const filas = Math.ceil(d.entregables.length / 2);
+    y += filas * 9 + 4;
+  }
+
   // ── Observaciones (si caben en pagina 1)
   if (d.observaciones) {
     if (y > H - 50) { doc.addPage(); drawHeaderSimple(doc, W, pL, pR, folio, 2); y = 22; }
@@ -1439,19 +1508,23 @@ function construirPDF(doc, d, folio, estado, checklistSecciones, checklistRespue
 
   // ──────────────────────────────────────────────────────────
   // ZONA INFERIOR: 4 bloques en 2 filas
-  // Fila 1: [Firma Aprobacion][Firma Cierre]
+  // Fila 1: [Firma Aprobacion][Firma Cierre]   (alto 34mm)
   // Fila 2: [Recepcion][Entrega][Sello 5x5][QR]
+  // El sello mide 50mm y se ancla al TOP de los recuadros (32mm),
+  // asi que sobresale 18mm por debajo de los recuadros.
+  // Espacios necesarios:
+  //   Fila 1: 34mm | gap: 8mm | Fila 2: 50mm (sello) + 4mm (margen abajo) = 96mm
+  //   + 3mm para la etiqueta superior 'RECEPCION...'
+  //   = 99mm reservados desde el bottom de la pagina
   // ──────────────────────────────────────────────────────────
-  // Reservamos siempre 90mm en la parte inferior para esta zona.
-  // Si y se acerca, paso a nueva pagina.
-  if (y > H - 92) { doc.addPage(); drawHeaderSimple(doc, W, pL, pR, folio, 3); y = 22; }
+  if (y > H - 102) { doc.addPage(); drawHeaderSimple(doc, W, pL, pR, folio, 3); y = 22; }
 
   // Posicionamos la zona inferior anclada al fondo de la pagina actual.
-  let zy = H - 88;
+  let zy = H - 99;
 
-  // FILA 1: 2 firmas digitales (Aprobacion / Cierre), media pagina cada una
+  // FILA 1: 2 firmas digitales (Aprobacion / Cierre)
   drawFirmasDigitales(doc, pL, zy, cW, firmasArr);
-  zy += 38;  // alto del bloque + label inferior + gap
+  zy += 26 /*caja*/ + 4 /*nombre*/ + 4 /*rol*/ + 8 /*gap separador*/;
 
   // FILA 2: Recepcion, Entrega, Sello, QR
   drawBloqueInferior(doc, pL, zy, cW, d, folio);
@@ -1536,18 +1609,19 @@ function drawFirmasDigitales(doc, x, y, cW, firmasArr) {
 // FILA 2 de la zona inferior: 2 firmas manuales + sello 5x5 + QR
 // En vertical NO caben los 4 lado a lado al ancho deseado, asi que comprimo:
 //   ancho disponible cW = 187.9mm
-//   Recepcion 50mm | gap 4 | Entrega 50mm | gap 4 | Sello 50x50 | gap 4 | QR 25mm = 187mm OK
+//   Recepcion 50mm | gap | Entrega 50mm | gap | Sello 50x50 | gap | QR 25mm
 function drawBloqueInferior(doc, x, y, cW, d, folio) {
   const recW = 50, recH = 32;
   const selloW = 50, selloH = 50;
   const qrW = 25;
   const gap = (cW - recW - recW - selloW - qrW) / 3;  // distribucion uniforme
 
-  // Como el sello mide 50 y los recuadros 32, todos comparten la misma "linea base"
-  // Subo el sello 9mm para que sus 50mm de alto queden centrados respecto a los 32 de los recuadros
-  // De este modo, NINGUN bloque pisa al de al lado.
-  const selloOffset = (selloH - recH) / 2;  // 9mm
-  const ys = y - selloOffset;  // sello empieza arriba para quedar centrado
+  // CAMBIO: alineamos el sello con el TOP de los recuadros, NO centrado.
+  // El sello queda mas alto que los recuadros por abajo, pero esa zona
+  // esta vacia y el sello fisico cabe sin problema. Asi, el TOP del sello
+  // queda exactamente al nivel de la etiqueta 'RECEPCION DEL RESPONSABLE'
+  // y NO invade el espacio de la fila de firmas digitales arriba.
+  const ys = y;
 
   // ── Recepcion (responsable al recibir)
   doc.setDrawColor(74, 74, 72); doc.setLineWidth(0.4);
@@ -1570,7 +1644,7 @@ function drawBloqueInferior(doc, x, y, cW, d, folio) {
   doc.setFont('helvetica', 'normal'); doc.setFontSize(6.5); doc.setTextColor(136, 135, 128);
   doc.text('Firma al entregar trabajo finalizado', x2 + recW / 2, y + recH + 8, { align: 'center' });
 
-  // ── Sello de calidad 5x5cm
+  // ── Sello de calidad 5x5cm (alineado con TOP de los recuadros)
   const xs = x2 + recW + gap;
   doc.setDrawColor(74, 74, 72); doc.setLineWidth(0.5);
   doc.rect(xs, ys, selloW, selloH);
@@ -1579,7 +1653,7 @@ function drawBloqueInferior(doc, x, y, cW, d, folio) {
   doc.setFont('helvetica', 'normal'); doc.setFontSize(7); doc.setTextColor(180, 180, 180);
   doc.text('(5 x 5 cm)', xs + selloW / 2, ys + selloH / 2 + 1, { align: 'center' });
 
-  // ── QR
+  // ── QR (centrado verticalmente respecto al sello)
   const xq = xs + selloW + gap;
   const yq = ys + (selloH - qrW) / 2;
   const verifUrl = SCRIPT_URL + '?accion=verificar&folio=' + encodeURIComponent(folio);
