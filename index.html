@@ -771,7 +771,7 @@ async function enviarOT() {
     const { jsPDF } = window.jspdf;
     const checklistEtapa = await cargarChecklist(d.etapa);
 
-    const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'letter' });
+    const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'letter' });
     const metadataJSON = JSON.stringify(d);
     doc.setProperties({
       title: 'OT - ' + d.proyecto,
@@ -797,7 +797,7 @@ async function enviarOT() {
     const result = await resp.json();
     if (result.ok) {
       // Generar PDF final con folio real
-      const doc2 = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'letter' });
+      const doc2 = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'letter' });
       doc2.setProperties({
         title: 'OT - ' + result.folio,
         subject: META_PREFIX + metadataJSON,
@@ -1242,58 +1242,68 @@ function firmaEstaVacia(canvasId) {
 // ── PDF (LANDSCAPE) ───────────────────────────────────────────
 // ══════════════════════════════════════════════════════════════
 
+// ══════════════════════════════════════════════════════════════
+// PDF en orientacion VERTICAL (portrait, Letter 215.9 x 279.4)
+// ══════════════════════════════════════════════════════════════
+
 function construirPDF(doc, d, folio, estado, checklistSecciones, checklistRespuestas, firmasArr) {
-  // Letter horizontal: 279.4 x 215.9
-  const W = 279.4, H = 215.9;
+  // Letter portrait
+  const W = 215.9, H = 279.4;
   const pL = 14, pR = 14;
   const cW = W - pL - pR;
   let y = 12;
 
   // ── Header negro
-  const headerH = 26;
-  doc.setFillColor(26, 26, 24); doc.rect(0, 0, W, headerH + 4, 'F');
+  const headerH = 30;
+  doc.setFillColor(26, 26, 24); doc.rect(0, 0, W, headerH, 'F');
+  // Logo blanco a la izquierda
   if (_logoB64) {
-    try { doc.addImage(_logoB64, 'PNG', pL, 2, 32, 24, '', 'FAST'); } catch (e) {}
+    try { doc.addImage(_logoB64, 'PNG', pL, 4, 22, 22, '', 'FAST'); } catch (e) {}
   }
+  // Subtitulo a la derecha del logo
   doc.setFont('helvetica', 'normal'); doc.setFontSize(7); doc.setTextColor(180, 180, 180);
-  doc.text('COMERCIALIZADORA DE ACEROS', pL + 36, 14);
-  doc.text('MANUFACTURADOS PARA LA INDUSTRIA', pL + 36, 18);
-  doc.setTextColor(255, 255, 255); doc.setFont('helvetica', 'normal'); doc.setFontSize(8);
-  doc.text('PRODUCCION', W - pR, 10, { align: 'right' });
-  doc.setFont('helvetica', 'bold'); doc.setFontSize(13);
-  doc.text('Orden de Trabajo', W - pR, 16, { align: 'right' });
-  doc.setTextColor(237, 125, 49); doc.setFont('helvetica', 'bold'); doc.setFontSize(10);
-  doc.text(folio, W - pR, 22, { align: 'right' });
+  doc.text('COMERCIALIZADORA DE ACEROS', pL + 26, 14);
+  doc.text('MANUFACTURADOS PARA LA INDUSTRIA', pL + 26, 18);
+  // Bloque derecho
+  doc.setTextColor(255, 255, 255); doc.setFont('helvetica', 'normal'); doc.setFontSize(7);
+  doc.text('PRODUCCION', W - pR, 11, { align: 'right' });
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(12);
+  doc.text('Orden de Trabajo', W - pR, 17, { align: 'right' });
+  doc.setTextColor(237, 125, 49); doc.setFont('helvetica', 'bold'); doc.setFontSize(9);
+  doc.text(folio, W - pR, 23, { align: 'right' });
 
-  y = headerH + 12;
+  y = headerH + 8;
 
   // ── Estado badge
   drawEstadoBadge(doc, pL, y - 4, estado);
-  y += 8;
+  y += 10;
 
-  // ── Datos en grid
+  // ── Datos: 2 filas de 3 columnas (en vertical no caben 6 columnas)
   doc.setTextColor(74, 74, 72); doc.setFont('helvetica', 'bold'); doc.setFontSize(8);
   doc.text('DATOS DE LA ORDEN', pL, y);
   doc.setDrawColor(211, 209, 199); doc.setLineWidth(0.2);
   doc.line(pL, y + 1, pL + cW, y + 1);
   y += 5;
-  drawInfoRow(doc, pL, y, [
-    { label: 'Proyecto',    value: d.proyecto,                w: cW * 0.22 },
-    { label: 'Etapa',       value: d.etapa,                   w: cW * 0.16 },
-    { label: 'Fecha',       value: formatDateMx(d.fecha),     w: cW * 0.12 },
-    { label: 'Responsable', value: d.responsable,             w: cW * 0.22 },
-    { label: 'Entrega',     value: d.entrega ? formatDateMx(d.entrega) : '—', w: cW * 0.13 },
-    { label: 'Tiempo est.', value: d.tiempo || '—',           w: cW * 0.15 }
-  ]);
-  y += 12;
 
-  // Linea adicional con OT interna e Inspeccion si existen
+  drawInfoRow(doc, pL, y, [
+    { label: 'Proyecto',    value: d.proyecto,            w: cW * 0.40 },
+    { label: 'Etapa',       value: d.etapa,               w: cW * 0.30 },
+    { label: 'Fecha',       value: formatDateMx(d.fecha), w: cW * 0.30 }
+  ]);
+  y += 11;
+  drawInfoRow(doc, pL, y, [
+    { label: 'Responsable', value: d.responsable,                                  w: cW * 0.40 },
+    { label: 'Entrega',     value: d.entrega ? formatDateMx(d.entrega) : '—',      w: cW * 0.30 },
+    { label: 'Tiempo est.', value: d.tiempo || '—',                                w: cW * 0.30 }
+  ]);
+  y += 11;
+
   if (d.ot_interna || d.inspeccion) {
     drawInfoRow(doc, pL, y, [
-      { label: 'No. OT interna', value: d.ot_interna || '—', w: cW * 0.30 },
-      { label: 'Inspeccion (notas previas)', value: d.inspeccion || '—', w: cW * 0.70 }
+      { label: 'No. OT interna',         value: d.ot_interna || '—', w: cW * 0.40 },
+      { label: 'Inspeccion (notas)',     value: d.inspeccion || '—', w: cW * 0.60 }
     ]);
-    y += 10;
+    y += 11;
   }
 
   // ── Materiales / BOM
@@ -1303,10 +1313,10 @@ function construirPDF(doc, d, folio, estado, checklistSecciones, checklistRespue
   y += 4;
 
   const matsCols = [
-    { x: pL,                w: 10,  h: '#',           align: 'center' },
-    { x: pL + 10,           w: cW * 0.55, h: 'Descripcion', align: 'left' },
-    { x: pL + 10 + cW*0.55, w: cW * 0.20, h: 'Cantidad',    align: 'right' },
-    { x: pL + 10 + cW*0.75, w: cW - 10 - cW*0.75, h: 'Unidad', align: 'left' }
+    { x: pL,                   w: 9,            h: '#',           align: 'center' },
+    { x: pL + 9,               w: cW * 0.60,    h: 'Descripcion', align: 'left'   },
+    { x: pL + 9 + cW * 0.60,   w: cW * 0.20,    h: 'Cantidad',    align: 'right'  },
+    { x: pL + 9 + cW * 0.80,   w: cW - 9 - cW * 0.80, h: 'Unidad',  align: 'left' }
   ];
   doc.setFillColor(26, 26, 24); doc.rect(pL, y, cW, 6, 'F');
   doc.setTextColor(255, 255, 255); doc.setFont('helvetica', 'bold'); doc.setFontSize(7);
@@ -1321,7 +1331,7 @@ function construirPDF(doc, d, folio, estado, checklistSecciones, checklistRespue
     d.materiales.forEach((m, i) => {
       const descLines = doc.splitTextToSize(String(m.descripcion || '—'), matsCols[1].w - 2);
       const rh = Math.max(6, descLines.length * 3.5) + 1;
-      if (y + rh > H - 80) { doc.addPage(); y = 14; }
+      if (y + rh > H - 30) { doc.addPage(); drawHeaderSimple(doc, W, pL, pR, folio, 2); y = 22; }
       if (i % 2 === 1) { doc.setFillColor(248, 247, 244); doc.rect(pL, y, cW, rh, 'F'); }
       doc.setDrawColor(230, 228, 220); doc.setLineWidth(0.1);
       doc.line(pL, y + rh, pL + cW, y + rh);
@@ -1339,9 +1349,9 @@ function construirPDF(doc, d, folio, estado, checklistSecciones, checklistRespue
   }
   y += 4;
 
-  // ── Observaciones
+  // ── Observaciones (si caben en pagina 1)
   if (d.observaciones) {
-    if (y > H - 80) { doc.addPage(); y = 14; }
+    if (y > H - 50) { doc.addPage(); drawHeaderSimple(doc, W, pL, pR, folio, 2); y = 22; }
     doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor(74, 74, 72);
     doc.text('OBSERVACIONES', pL, y);
     doc.line(pL, y + 1, pL + cW, y + 1); y += 5;
@@ -1356,65 +1366,69 @@ function construirPDF(doc, d, folio, estado, checklistSecciones, checklistRespue
 
   // ── PAGINA 2: CHECKLIST + FIRMAS + SELLO
   doc.addPage();
-  y = 14;
-
-  // Repetir header simple
-  doc.setFillColor(26, 26, 24); doc.rect(0, 0, W, 14, 'F');
-  doc.setTextColor(255, 255, 255); doc.setFont('helvetica', 'bold'); doc.setFontSize(10);
-  doc.text('CAMI', pL, 9);
-  doc.setFont('helvetica', 'normal'); doc.setFontSize(8);
-  doc.text('Orden de Trabajo - ' + folio, W / 2, 9, { align: 'center' });
-  doc.setTextColor(237, 125, 49); doc.setFont('helvetica', 'bold');
-  doc.text('Pag. 2', W - pR, 9, { align: 'right' });
+  drawHeaderSimple(doc, W, pL, pR, folio, 2);
   y = 22;
 
-  // Checklist
-  doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(74, 74, 72);
+  // Titulo del checklist
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.setTextColor(74, 74, 72);
   doc.text('CHECKLIST DE INSPECCION DE CALIDAD - ETAPA ' + (d.etapa || '').toUpperCase(), pL, y);
   doc.setDrawColor(211, 209, 199); doc.setLineWidth(0.2);
   doc.line(pL, y + 1, pL + cW, y + 1);
-  y += 6;
+  y += 8;
 
   if (checklistSecciones && checklistSecciones.length) {
-    // Indexar respuestas si vienen
     const respuestasMap = {};
     if (Array.isArray(checklistRespuestas)) {
       checklistRespuestas.forEach(r => { respuestasMap[r.seccion + '||' + r.item] = r; });
     }
 
     checklistSecciones.forEach(sec => {
-      // Header de seccion (ancho completo, bien separado del primer item)
-      if (y + 14 > H - 70) { doc.addPage(); y = 14; }
-      doc.setFillColor(26, 26, 24); doc.rect(pL, y, cW, 6, 'F');
-      doc.setTextColor(255, 255, 255); doc.setFont('helvetica', 'bold'); doc.setFontSize(8);
-      doc.text(sec.seccion, pL + 3, y + 4);
-      y += 7;  // <<< clave: este +7 garantiza que el header NO se monte sobre el primer item
+      // Estimar altura: header (8mm) + items (7mm cada uno) + padding (4mm)
+      const blockH = 8 + sec.items.length * 7 + 4;
+      if (y + blockH > H - 100) { doc.addPage(); drawHeaderSimple(doc, W, pL, pR, folio, 3); y = 22; }
 
+      // ── HEADER de seccion (banda negra) ──────────────────────
+      doc.setFillColor(26, 26, 24); doc.rect(pL, y, cW, 7, 'F');
+      doc.setTextColor(255, 255, 255); doc.setFont('helvetica', 'bold'); doc.setFontSize(9);
+      doc.text(sec.seccion, pL + 4, y + 5);
+      // CRITICO: avanzar y CON BUEN COLCHON antes de empezar items.
+      // Header mide 7mm + 4mm de gap. El primer item nunca toca el header.
+      y += 7 + 4;
+
+      // ── ITEMS de la seccion ──────────────────────────────────
       doc.setTextColor(0, 0, 0); doc.setFont('helvetica', 'normal'); doc.setFontSize(9);
       sec.items.forEach((item, i) => {
-        if (y + 6 > H - 70) { doc.addPage(); y = 14; }
+        if (y + 7 > H - 100) {
+          doc.addPage(); drawHeaderSimple(doc, W, pL, pR, folio, 3); y = 22;
+          // Re-pintar header de seccion al continuar en nueva pagina
+          doc.setFillColor(26, 26, 24); doc.rect(pL, y, cW, 7, 'F');
+          doc.setTextColor(255, 255, 255); doc.setFont('helvetica', 'bold'); doc.setFontSize(9);
+          doc.text(sec.seccion + ' (cont.)', pL + 4, y + 5);
+          y += 7 + 4;
+          doc.setTextColor(0, 0, 0); doc.setFont('helvetica', 'normal'); doc.setFontSize(9);
+        }
         const resp = respuestasMap[sec.seccion + '||' + item];
-        // Checkbox
+        // Checkbox 4x4mm
         doc.setDrawColor(74, 74, 72); doc.setLineWidth(0.3);
         doc.rect(pL + 2, y - 3, 4, 4);
         if (resp && resp.cumple === 'SI') {
-          // marca de palomeo
           doc.setLineWidth(0.6);
           doc.line(pL + 2.7, y - 1.2, pL + 3.6, y - 0.3);
           doc.line(pL + 3.6, y - 0.3, pL + 5.3, y - 2.4);
           doc.setLineWidth(0.3);
         }
-        // Item
+        // Texto del item
         doc.text(item, pL + 9, y);
-        // Nota a la derecha (si la hay)
+        // Nota (si la hay)
         if (resp && resp.nota) {
           doc.setFont('helvetica', 'italic'); doc.setFontSize(8); doc.setTextColor(74, 74, 72);
-          doc.text('— ' + resp.nota, pL + 90, y, { maxWidth: cW - 100 });
+          doc.text('— ' + resp.nota, pL + 90, y, { maxWidth: cW - 95 });
           doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(0, 0, 0);
         }
-        y += 5.5;
+        y += 7;  // spacing generoso entre items
       });
-      y += 3;  // espacio entre secciones
+
+      y += 4;  // gap entre secciones
     });
   } else {
     doc.setFont('helvetica', 'italic'); doc.setFontSize(9); doc.setTextColor(136, 135, 128);
@@ -1423,33 +1437,53 @@ function construirPDF(doc, d, folio, estado, checklistSecciones, checklistRespue
     y += 8;
   }
 
-  // ── ZONA INFERIOR: FIRMAS + SELLO + QR
-  // Anclamos a la parte de abajo de la pagina
-  const bottomY = H - 70;  // 70mm de zona inferior
-  if (y > bottomY - 5) { doc.addPage(); y = 22; }
+  // ──────────────────────────────────────────────────────────
+  // ZONA INFERIOR: 4 bloques en 2 filas
+  // Fila 1: [Firma Aprobacion][Firma Cierre]
+  // Fila 2: [Recepcion][Entrega][Sello 5x5][QR]
+  // ──────────────────────────────────────────────────────────
+  // Reservamos siempre 90mm en la parte inferior para esta zona.
+  // Si y se acerca, paso a nueva pagina.
+  if (y > H - 92) { doc.addPage(); drawHeaderSimple(doc, W, pL, pR, folio, 3); y = 22; }
 
-  // Firmas digitales arriba (aprobacion + cierre)
-  drawFirmasDigitales(doc, pL, bottomY - 35, cW, firmasArr);
+  // Posicionamos la zona inferior anclada al fondo de la pagina actual.
+  let zy = H - 88;
 
-  // Bloque inferior: 2 recuadros de firma manual + sello calidad + QR
-  drawBloqueInferior(doc, pL, bottomY, cW, d, folio);
+  // FILA 1: 2 firmas digitales (Aprobacion / Cierre), media pagina cada una
+  drawFirmasDigitales(doc, pL, zy, cW, firmasArr);
+  zy += 38;  // alto del bloque + label inferior + gap
+
+  // FILA 2: Recepcion, Entrega, Sello, QR
+  drawBloqueInferior(doc, pL, zy, cW, d, folio);
+}
+
+function drawHeaderSimple(doc, W, pL, pR, folio, pageNum) {
+  doc.setFillColor(26, 26, 24); doc.rect(0, 0, W, 14, 'F');
+  if (_logoB64) {
+    try { doc.addImage(_logoB64, 'PNG', pL, 2, 11, 10, '', 'FAST'); } catch (e) {}
+  }
+  doc.setTextColor(255, 255, 255); doc.setFont('helvetica', 'normal'); doc.setFontSize(8);
+  doc.text('Orden de Trabajo - ' + folio, W / 2, 9, { align: 'center' });
+  doc.setTextColor(237, 125, 49); doc.setFont('helvetica', 'bold');
+  doc.text('Pag. ' + pageNum, W - pR, 9, { align: 'right' });
 }
 
 function drawEstadoBadge(doc, x, y, estado) {
   const labelMap = {
-    'BORRADOR': { txt: 'BORRADOR', bg: [239,239,237], fg: [102,102,102] },
-    'PENDIENTE_APROBACION': { txt: 'PENDIENTE DE APROBACION', bg: [255,244,214], fg: [139,105,20] },
-    'APROBADA': { txt: 'APROBADA', bg: [234,243,222], fg: [59,109,17] },
-    'EN_PROCESO': { txt: 'EN PROCESO', bg: [232,240,248], fg: [42,90,140] },
-    'COMPLETADA': { txt: 'COMPLETADA', bg: [234,243,222], fg: [59,109,17] },
-    'RECHAZADA': { txt: 'RECHAZADA', bg: [252,235,235], fg: [163,45,45] }
+    'BORRADOR':             { txt: 'BORRADOR',                 bg: [239,239,237], fg: [102,102,102] },
+    'PENDIENTE_APROBACION': { txt: 'PENDIENTE DE APROBACION',  bg: [255,244,214], fg: [139,105,20]  },
+    'APROBADA':             { txt: 'APROBADA',                 bg: [234,243,222], fg: [59,109,17]   },
+    'EN_PROCESO':           { txt: 'EN PROCESO',               bg: [232,240,248], fg: [42,90,140]   },
+    'COMPLETADA':           { txt: 'COMPLETADA',               bg: [234,243,222], fg: [59,109,17]   },
+    'RECHAZADA':            { txt: 'RECHAZADA',                bg: [252,235,235], fg: [163,45,45]   }
   };
   const cfg = labelMap[estado] || labelMap['BORRADOR'];
   doc.setFillColor(cfg.bg[0], cfg.bg[1], cfg.bg[2]); doc.setDrawColor(cfg.bg[0], cfg.bg[1], cfg.bg[2]);
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(8);
   const w = doc.getTextWidth(cfg.txt) + 8;
   doc.roundedRect(x, y, w, 7, 1, 1, 'F');
-  doc.setTextColor(cfg.fg[0], cfg.fg[1], cfg.fg[2]); doc.setFont('helvetica', 'bold'); doc.setFontSize(8);
-  doc.text(cfg.txt, x + w/2, y + 5, { align: 'center' });
+  doc.setTextColor(cfg.fg[0], cfg.fg[1], cfg.fg[2]);
+  doc.text(cfg.txt, x + w / 2, y + 5, { align: 'center' });
 }
 
 function drawInfoRow(doc, x, y, items) {
@@ -1464,88 +1498,97 @@ function drawInfoRow(doc, x, y, items) {
   });
 }
 
+// FILA 1 de la zona inferior: 2 firmas digitales lado a lado
 function drawFirmasDigitales(doc, x, y, cW, firmasArr) {
-  // Si firmasArr trae base64s, los pintamos. Si esta vacio o null, dibujamos cajas vacias con etiquetas.
   const apr = (firmasArr && firmasArr.find) ? firmasArr.find(f => f.tipo === 'APROBACION') : null;
   const cie = (firmasArr && firmasArr.find) ? firmasArr.find(f => f.tipo === 'CIERRE') : null;
   const fW = (cW - 6) / 2;
-  const fH = 28;
-  // Caja izquierda - Aprobacion
+  const fH = 26;
+
+  // ── Caja izquierda - Aprobacion
   doc.setDrawColor(74, 74, 72); doc.setLineWidth(0.4);
   doc.rect(x, y, fW, fH);
   doc.setFont('helvetica', 'bold'); doc.setFontSize(7); doc.setTextColor(136, 135, 128);
-  doc.text('FIRMA DE APROBACION', x + 2, y - 1);
+  doc.text('FIRMA DE APROBACION', x + 2, y - 1.5);
   if (apr && apr.imageB64) {
-    try { doc.addImage(apr.imageB64, 'PNG', x + 2, y + 2, fW - 4, fH - 8, '', 'FAST'); } catch (e) {}
+    try { doc.addImage(apr.imageB64, 'PNG', x + 2, y + 2, fW - 4, fH - 4, '', 'FAST'); } catch (e) {}
   }
   doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor(0, 0, 0);
-  doc.text(apr ? apr.firmante : '_________________________', x + fW/2, y + fH + 4, { align: 'center' });
+  doc.text(apr ? apr.firmante : '_________________________', x + fW / 2, y + fH + 4, { align: 'center' });
   doc.setFont('helvetica', 'normal'); doc.setFontSize(7); doc.setTextColor(136, 135, 128);
-  doc.text('Gerencia / Direccion', x + fW/2, y + fH + 8, { align: 'center' });
+  doc.text('Gerencia / Direccion', x + fW / 2, y + fH + 8, { align: 'center' });
 
-  // Caja derecha - Cierre
+  // ── Caja derecha - Cierre
   const x2 = x + fW + 6;
   doc.setDrawColor(74, 74, 72); doc.setLineWidth(0.4);
   doc.rect(x2, y, fW, fH);
   doc.setFont('helvetica', 'bold'); doc.setFontSize(7); doc.setTextColor(136, 135, 128);
-  doc.text('FIRMA DE CIERRE', x2 + 2, y - 1);
+  doc.text('FIRMA DE CIERRE', x2 + 2, y - 1.5);
   if (cie && cie.imageB64) {
-    try { doc.addImage(cie.imageB64, 'PNG', x2 + 2, y + 2, fW - 4, fH - 8, '', 'FAST'); } catch (e) {}
+    try { doc.addImage(cie.imageB64, 'PNG', x2 + 2, y + 2, fW - 4, fH - 4, '', 'FAST'); } catch (e) {}
   }
   doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor(0, 0, 0);
-  doc.text(cie ? cie.firmante : '_________________________', x2 + fW/2, y + fH + 4, { align: 'center' });
+  doc.text(cie ? cie.firmante : '_________________________', x2 + fW / 2, y + fH + 4, { align: 'center' });
   doc.setFont('helvetica', 'normal'); doc.setFontSize(7); doc.setTextColor(136, 135, 128);
-  doc.text('Supervisor', x2 + fW/2, y + fH + 8, { align: 'center' });
+  doc.text('Supervisor', x2 + fW / 2, y + fH + 8, { align: 'center' });
 }
 
+// FILA 2 de la zona inferior: 2 firmas manuales + sello 5x5 + QR
+// En vertical NO caben los 4 lado a lado al ancho deseado, asi que comprimo:
+//   ancho disponible cW = 187.9mm
+//   Recepcion 50mm | gap 4 | Entrega 50mm | gap 4 | Sello 50x50 | gap 4 | QR 25mm = 187mm OK
 function drawBloqueInferior(doc, x, y, cW, d, folio) {
-  // Layout horizontal: [Recepcion 80mm] [Entrega 80mm] [Sello Calidad 50x50mm] [QR 30mm]
-  const recH = 35;
-  const recW = 80;
+  const recW = 50, recH = 32;
   const selloW = 50, selloH = 50;
-  const qrW = 30;
+  const qrW = 25;
+  const gap = (cW - recW - recW - selloW - qrW) / 3;  // distribucion uniforme
 
-  // Recepcion (responsable al recibir la OT)
+  // Como el sello mide 50 y los recuadros 32, todos comparten la misma "linea base"
+  // Subo el sello 9mm para que sus 50mm de alto queden centrados respecto a los 32 de los recuadros
+  // De este modo, NINGUN bloque pisa al de al lado.
+  const selloOffset = (selloH - recH) / 2;  // 9mm
+  const ys = y - selloOffset;  // sello empieza arriba para quedar centrado
+
+  // ── Recepcion (responsable al recibir)
   doc.setDrawColor(74, 74, 72); doc.setLineWidth(0.4);
   doc.rect(x, y, recW, recH);
-  doc.setFont('helvetica', 'bold'); doc.setFontSize(7); doc.setTextColor(136, 135, 128);
-  doc.text('RECEPCION DEL RESPONSABLE', x + 2, y - 1);
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(6.5); doc.setTextColor(136, 135, 128);
+  doc.text('RECEPCION DEL RESPONSABLE', x + 2, y - 1.5);
   doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor(0, 0, 0);
-  doc.text(d.responsable || '_________________________', x + recW/2, y + recH + 4, { align: 'center' });
-  doc.setFont('helvetica', 'normal'); doc.setFontSize(7); doc.setTextColor(136, 135, 128);
-  doc.text('Firma al recibir la OT', x + recW/2, y + recH + 8, { align: 'center' });
+  doc.text(d.responsable || '___________', x + recW / 2, y + recH + 4, { align: 'center', maxWidth: recW });
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(6.5); doc.setTextColor(136, 135, 128);
+  doc.text('Firma al recibir la OT', x + recW / 2, y + recH + 8, { align: 'center' });
 
-  // Entrega (responsable al regresar OT terminada)
-  const x2 = x + recW + 6;
+  // ── Entrega
+  const x2 = x + recW + gap;
   doc.setDrawColor(74, 74, 72);
   doc.rect(x2, y, recW, recH);
-  doc.setFont('helvetica', 'bold'); doc.setFontSize(7); doc.setTextColor(136, 135, 128);
-  doc.text('ENTREGA / TRABAJO TERMINADO', x2 + 2, y - 1);
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(6.5); doc.setTextColor(136, 135, 128);
+  doc.text('ENTREGA / TRABAJO TERMINADO', x2 + 2, y - 1.5);
   doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor(0, 0, 0);
-  doc.text(d.responsable || '_________________________', x2 + recW/2, y + recH + 4, { align: 'center' });
-  doc.setFont('helvetica', 'normal'); doc.setFontSize(7); doc.setTextColor(136, 135, 128);
-  doc.text('Firma al entregar trabajo finalizado', x2 + recW/2, y + recH + 8, { align: 'center' });
+  doc.text(d.responsable || '___________', x2 + recW / 2, y + recH + 4, { align: 'center', maxWidth: recW });
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(6.5); doc.setTextColor(136, 135, 128);
+  doc.text('Firma al entregar trabajo finalizado', x2 + recW / 2, y + recH + 8, { align: 'center' });
 
-  // Sello de calidad 50x50 mm (subir un poco para que no se salga abajo)
-  const xs = x2 + recW + 6;
-  const ys = y - 8;  // sube un poco porque mide 50, mas alto que los recuadros de 35
+  // ── Sello de calidad 5x5cm
+  const xs = x2 + recW + gap;
   doc.setDrawColor(74, 74, 72); doc.setLineWidth(0.5);
   doc.rect(xs, ys, selloW, selloH);
-  doc.setFont('helvetica', 'bold'); doc.setFontSize(7); doc.setTextColor(136, 135, 128);
-  doc.text('SELLO DE CALIDAD CAMI', xs + 2, ys - 1);
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(6.5); doc.setTextColor(136, 135, 128);
+  doc.text('SELLO DE CALIDAD CAMI', xs + 2, ys - 1.5);
   doc.setFont('helvetica', 'normal'); doc.setFontSize(7); doc.setTextColor(180, 180, 180);
-  doc.text('(5 x 5 cm)', xs + selloW/2, ys + selloH/2, { align: 'center' });
+  doc.text('(5 x 5 cm)', xs + selloW / 2, ys + selloH / 2 + 1, { align: 'center' });
 
-  // QR a la derecha del todo
+  // ── QR
+  const xq = xs + selloW + gap;
+  const yq = ys + (selloH - qrW) / 2;
   const verifUrl = SCRIPT_URL + '?accion=verificar&folio=' + encodeURIComponent(folio);
   try {
     const qrCanvas = generarQR(verifUrl);
     if (qrCanvas) {
-      const xq = xs + selloW + 6;
-      const yq = ys + (selloH - qrW) / 2;
       doc.addImage(qrCanvas.toDataURL('image/png'), 'PNG', xq, yq, qrW, qrW);
-      doc.setFont('helvetica', 'normal'); doc.setFontSize(7); doc.setTextColor(120, 120, 120);
-      doc.text('Escanea para verificar', xq + qrW/2, yq + qrW + 3, { align: 'center' });
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(6.5); doc.setTextColor(120, 120, 120);
+      doc.text('Escanea para verificar', xq + qrW / 2, yq + qrW + 3, { align: 'center' });
     }
   } catch (e) {}
 }
