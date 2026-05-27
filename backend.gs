@@ -40,6 +40,10 @@ const APP_KEY         = 'ot';
 const APP_KEY_APROBAR = 'ot-aprobar';
 const APP_KEY_CERRAR  = 'ot-cerrar';
 
+// Si false, las OTs nuevas pasan directo a APROBADA al crearse (saltan PENDIENTE_APROBACION).
+// Las OTs viejas que quedaron en PENDIENTE_APROBACION siguen siendo procesables por handleAprobarOT/handleRechazarOT.
+const REQUIERE_APROBACION = false;
+
 const H_OT          = 'OT';
 const H_MATERIALES  = 'OT_MATERIALES';
 const H_CHECKLIST   = 'OT_CHECKLIST_RESPUESTAS';
@@ -289,6 +293,10 @@ function handleCrearOT(data) {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     const folio = generarFolio(ss, proyecto, fecha);
 
+    const estadoInicial   = REQUIERE_APROBACION ? 'PENDIENTE_APROBACION' : 'APROBADA';
+    const aprobadoPorAuto = REQUIERE_APROBACION ? '' : 'SISTEMA-AUTO';
+    const fechaAprobAuto  = REQUIERE_APROBACION ? '' : new Date();
+
     // 1. Cabecera en OT
     const shOT = ss.getSheetByName(H_OT);
     if (!shOT) return jsonResp({ ok: false, error: 'Hoja OT no encontrada' });
@@ -303,10 +311,10 @@ function handleCrearOT(data) {
       tiempo,                   // H tiempo
       inspeccion,               // I inspeccion (texto libre)
       observaciones,            // J observaciones
-      'PENDIENTE_APROBACION',   // K estado
+      estadoInicial,            // K estado
       usuario.nombre,           // L creado_por
-      '',                       // M aprobado_por
-      '',                       // N fecha_aprob
+      aprobadoPorAuto,          // M aprobado_por
+      fechaAprobAuto,           // N fecha_aprob
       '',                       // O cerrado_por
       '',                       // P fecha_cierre
       '',                       // Q pdf_url
@@ -334,6 +342,9 @@ function handleCrearOT(data) {
 
     // 3. Log
     appendLog(ss, folio, 'CREADA', usuario.nombre, '');
+    if (!REQUIERE_APROBACION) {
+      appendLog(ss, folio, 'APROBADA', 'SISTEMA-AUTO', 'Aprobacion automatica (REQUIERE_APROBACION=false)');
+    }
 
     // 4. PDF en Drive
     let pdfUrl = '';
