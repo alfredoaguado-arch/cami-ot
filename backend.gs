@@ -113,17 +113,24 @@ function handleListaEtapas() {
   const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(H_CAT_CHECKL);
   if (!sh) return jsonResp({ ok: false, error: 'Hoja CAT_OT_CHECKLIST no encontrada' });
   const rows = sh.getDataRange().getValues();
-  const etapasSet = {};
-  const orden = [];
+  const etapasMap = {};
+  const etapasDetalle = [];
   for (let i = 3; i < rows.length; i++) {
     const etapa  = String(rows[i][0] || '').trim();
     const activo = String(rows[i][3] || '').trim().toUpperCase();
-    if (etapa && activo === 'SI' && !etapasSet[etapa]) {
-      etapasSet[etapa] = true;
-      orden.push(etapa);
+    const codigo = String(rows[i][4] || '').trim();
+    const ordenRaw = rows[i][5];
+    const ordenNum = (ordenRaw === '' || ordenRaw == null) ? 999 : (parseInt(ordenRaw, 10) || 999);
+    if (etapa && activo === 'SI' && !etapasMap[etapa]) {
+      etapasMap[etapa] = true;
+      etapasDetalle.push({ etapa: etapa, codigo: codigo, orden: ordenNum });
     }
   }
-  return jsonResp({ ok: true, etapas: orden });
+  etapasDetalle.sort(function(a, b) { return a.orden - b.orden; });
+  // etapas: array legacy de strings (compatibilidad con frontend pre-Fase B). Deprecated.
+  // etapas_detalle: nueva estructura con codigo y orden.
+  const etapas = etapasDetalle.map(function(e) { return e.etapa; });
+  return jsonResp({ ok: true, etapas: etapas, etapas_detalle: etapasDetalle });
 }
 
 function handleListaChecklist(etapa) {
@@ -134,13 +141,16 @@ function handleListaChecklist(etapa) {
   // Estructura por seccion preservando orden de aparicion
   const seccionesMap = {};
   const seccionesOrden = [];
+  let codigo = '';
   for (let i = 3; i < rows.length; i++) {
     const e   = String(rows[i][0] || '').trim().toUpperCase();
     const sec = String(rows[i][1] || '').trim();
     const itm = String(rows[i][2] || '').trim();
     const act = String(rows[i][3] || '').trim().toUpperCase();
+    const cod = String(rows[i][4] || '').trim();
     if (!e || !sec || !itm || act !== 'SI') continue;
     if (etapa && e !== etapa) continue;
+    if (!codigo && cod) codigo = cod;
     if (!seccionesMap[sec]) {
       seccionesMap[sec] = [];
       seccionesOrden.push(sec);
@@ -150,7 +160,7 @@ function handleListaChecklist(etapa) {
   const secciones = seccionesOrden.map(function(s) {
     return { seccion: s, items: seccionesMap[s] };
   });
-  return jsonResp({ ok: true, etapa: etapa, secciones: secciones });
+  return jsonResp({ ok: true, etapa: etapa, codigo: codigo, secciones: secciones });
 }
 
 function handleGetLogo() {
