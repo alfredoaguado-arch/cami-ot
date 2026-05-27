@@ -866,7 +866,7 @@ async function enviarOT() {
       keywords: 'CAMI OT ' + d.proyecto,
       creator: 'CAMI Sistema'
     });
-    construirPDF(doc, d, folioPreview, 'PENDIENTE_APROBACION', checklistEtapa, [], null);
+    construirPDF(doc, d, folioPreview, 'APROBADA', checklistEtapa, [], null);
 
     btn.textContent = 'Enviando...';
     const pdfB64 = doc.output('datauristring').split(',')[1];
@@ -891,7 +891,7 @@ async function enviarOT() {
         keywords: 'CAMI OT ' + d.proyecto,
         creator: 'CAMI Sistema'
       });
-      construirPDF(doc2, d, result.folio, 'PENDIENTE_APROBACION', checklistEtapa, [], null);
+      construirPDF(doc2, d, result.folio, 'APROBADA', checklistEtapa, [], null);
       _ultimoPDF = { folio: result.folio, blob: doc2.output('blob'), doc: doc2, url: result.url };
       mostrarExitoModal(result.folio, result.url);
     } else if (/sesion/i.test(result.error || '')) {
@@ -1571,7 +1571,8 @@ function construirPDF(doc, d, folio, estado, checklistSecciones, checklistRespue
   // Posicionamos la zona inferior anclada al fondo de la pagina actual.
   let zy = H - 99;
 
-  // FILA 1: 2 firmas digitales (Aprobacion / Cierre)
+  // FILA 1: QR cierre (izquierda) + firma de cierre (derecha)
+  drawQRCierre(doc, pL, zy, folio);
   drawFirmasDigitales(doc, pL, zy, cW, firmasArr);
   zy += 26 /*caja*/ + 4 /*nombre*/ + 4 /*rol*/ + 8 /*gap separador*/;
 
@@ -1620,27 +1621,14 @@ function drawInfoRow(doc, x, y, items) {
   });
 }
 
-// FILA 1 de la zona inferior: 2 firmas digitales lado a lado
+// FILA 1 de la zona inferior: solo firma de cierre (la de aprobacion se elimino
+// con REQUIERE_APROBACION=false; el lado izquierdo lo ocupa drawQRCierre).
 function drawFirmasDigitales(doc, x, y, cW, firmasArr) {
-  const apr = (firmasArr && firmasArr.find) ? firmasArr.find(f => f.tipo === 'APROBACION') : null;
   const cie = (firmasArr && firmasArr.find) ? firmasArr.find(f => f.tipo === 'CIERRE') : null;
   const fW = (cW - 6) / 2;
   const fH = 26;
 
-  // ── Caja izquierda - Aprobacion
-  doc.setDrawColor(74, 74, 72); doc.setLineWidth(0.4);
-  doc.rect(x, y, fW, fH);
-  doc.setFont('helvetica', 'bold'); doc.setFontSize(7); doc.setTextColor(136, 135, 128);
-  doc.text('FIRMA DE APROBACION', x + 2, y - 1.5);
-  if (apr && apr.imageB64) {
-    try { doc.addImage(apr.imageB64, 'PNG', x + 2, y + 2, fW - 4, fH - 4, '', 'FAST'); } catch (e) {}
-  }
-  doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor(0, 0, 0);
-  doc.text(apr ? apr.firmante : '_________________________', x + fW / 2, y + fH + 4, { align: 'center' });
-  doc.setFont('helvetica', 'normal'); doc.setFontSize(7); doc.setTextColor(136, 135, 128);
-  doc.text('Gerencia / Direccion', x + fW / 2, y + fH + 8, { align: 'center' });
-
-  // ── Caja derecha - Cierre
+  // ── Caja derecha (unica) - Cierre
   const x2 = x + fW + 6;
   doc.setDrawColor(74, 74, 72); doc.setLineWidth(0.4);
   doc.rect(x2, y, fW, fH);
@@ -1653,6 +1641,23 @@ function drawFirmasDigitales(doc, x, y, cW, firmasArr) {
   doc.text(cie ? cie.firmante : '_________________________', x2 + fW / 2, y + fH + 4, { align: 'center' });
   doc.setFont('helvetica', 'normal'); doc.setFontSize(7); doc.setTextColor(136, 135, 128);
   doc.text('Supervisor', x2 + fW / 2, y + fH + 8, { align: 'center' });
+}
+
+// QR para escaneo de cierre. Ocupa el lado izquierdo de la fila 1
+// (espacio liberado al eliminar la caja de FIRMA DE APROBACION).
+function drawQRCierre(doc, x, y, folio) {
+  const qrW = 32;
+  const cierreUrl = 'https://alfredoaguado-arch.github.io/cami-ot/#cerrar/' + encodeURIComponent(folio);
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(7); doc.setTextColor(136, 135, 128);
+  doc.text('ESCANEA PARA CERRAR LA OT', x + qrW / 2, y - 1.5, { align: 'center' });
+  try {
+    const qrCanvas = generarQR(cierreUrl);
+    if (qrCanvas) {
+      doc.addImage(qrCanvas.toDataURL('image/png'), 'PNG', x, y, qrW, qrW);
+    }
+  } catch (e) {}
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(6.5); doc.setTextColor(136, 135, 128);
+  doc.text('Requiere PIN del supervisor', x + qrW / 2, y + qrW + 3, { align: 'center' });
 }
 
 // FILA 2 de la zona inferior: 2 firmas manuales + sello 5x5 + QR
