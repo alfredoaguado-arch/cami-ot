@@ -1,0 +1,845 @@
+// ================================================================
+// CAMI - Apps Script ORDENES DE TRABAJO v2.0
+// Bound al Sheet de OT (CAMI_OT_DB) - ID 12WU13Qp2DPXjaqAMuXg-yYYizuKqMU1K04v0nw0Ud7o
+//
+// REDISENIO COMPLETO vs v1.3:
+//   - Flujo con estados:
+//       BORRADOR -> PENDIENTE_APROBACION -> APROBADA -> EN_PROCESO -> COMPLETADA
+//                                       -> RECHAZADA
+//   - Aprobacion: gerencia O direccion (basta una)
+//   - Cierre: misma persona que aprobo
+//   - Folio: OT-PROYECTO-NNN-YYYY-MM-DD (consecutivo global por proyecto)
+//   - Checklist por etapa, leido de CAT_OT_CHECKLIST
+//   - Firmas digitales (PNG en Drive, refs en Sheet) capturadas en canvas
+//   - Recepcion del responsable: manual (recuadro vacio en PDF impreso)
+//   - Sello de calidad 5x5cm: recuadro vacio para sello fisico
+//
+// App keys:
+//   - ot           : crear OT (supervisores y arriba)
+//   - ot-aprobar   : gerencia o direccion
+//   - ot-cerrar    : marcar completada (mismo usuario que aprobo)
+//
+// Hojas requeridas:
+//   - OT                      cabeceras
+//   - OT_MATERIALES           materiales/BOM por OT
+//   - OT_CHECKLIST_RESPUESTAS items del checklist al cerrar
+//   - OT_FIRMAS               metadata de firmas (URLs en Drive)
+//   - OT_LOG                  bitacora de cambios de estado
+//   - CAT_PROYECTOS           catalogo (mismo formato que requisicion)
+//   - CAT_OT_CHECKLIST        Etapa | Seccion | Item | Activo
+//
+// Folder Drive PDFs OT: 1WxxF5AfU6XTWT_SSisWqhTGzQdouadRL
+// Folder Drive Firmas:  (subcarpeta automatica dentro del folder de OT)
+// ================================================================
+
+const CENTRAL_URL  = 'https://script.google.com/macros/s/AKfycbw8Ucc9J3_TQcsAR0tn2Lk5DBN2bPWG6HF2pm3GfoEwa2NlRFQn5qZPVj7gy-IaLBSg/exec';
+const FOLDER_ID    = '1WxxF5AfU6XTWT_SSisWqhTGzQdouadRL';
+const LOGO_FILE_ID = '1J9yDatRxKTG_5AAPOpZblUMa-OPeJ5qP';
+
+const APP_KEY         = 'ot';
+const APP_KEY_APROBAR = 'ot-aprobar';
+const APP_KEY_CERRAR  = 'ot-cerrar';
+
+const H_OT          = 'OT';
+const H_MATERIALES  = 'OT_MATERIALES';
+const H_CHECKLIST   = 'OT_CHECKLIST_RESPUESTAS';
+const H_FIRMAS      = 'OT_FIRMAS';
+const H_LOG         = 'OT_LOG';
+const H_PROYECTOS   = 'CAT_PROYECTOS';
+const H_CAT_CHECKL  = 'CAT_OT_CHECKLIST';
+
+const META_PREFIX       = 'CAMI_OT_DATA::';
+const VERIFICACION_PATH = '?accion=verificar&folio=';
+
+// Subcarpeta para firmas (creada automaticamente al primer uso)
+const FIRMAS_SUBFOLDER = 'firmas-digitales';
+
+// ── ROUTER ─────────────────────────────────────────────────────
+function doGet(e) {
+  const accion = (e && e.parameter && e.parameter.accion) || '';
+  try {
+    if (accion === 'listaProyectos')   return handleListaProyectos();
+    if (accion === 'listaChecklist')   return handleListaChecklist(e.parameter.etapa || '');
+    if (accion === 'listaEtapas')      return handleListaEtapas();
+    if (accion === 'getLogo')          return handleGetLogo();
+    if (accion === 'verificar')        return handleVerificar(e.parameter.folio || '');
+    if (accion === 'firma')            return handleFirmaImg(e.parameter.id || '');
+    if (accion === 'ping')             return jsonResp({ ok: true, version: '2.0', module: 'cami-ot' });
+    return jsonResp({ ok: false, error: 'Accion desconocida: ' + accion });
+  } catch (err) {
+    return jsonResp({ ok: false, error: err.message });
+  }
+}
+
+function doPost(e) {
+  try {
+    const raw  = (e.postData && e.postData.contents) ? e.postData.contents : '{}';
+    const data = JSON.parse(raw);
+    const accion = data.action || '';
+    if (accion === 'crearOT')              return handleCrearOT(data);
+    if (accion === 'listarOTs')            return handleListarOTs(data);
+    if (accion === 'descargarOT')          return handleDescargarOT(data);
+    if (accion === 'listarPorAprobar')     return handleListarPorAprobar(data);
+    if (accion === 'aprobarOT')            return handleAprobarOT(data);
+    if (accion === 'rechazarOT')           return handleRechazarOT(data);
+    if (accion === 'listarPorCerrar')      return handleListarPorCerrar(data);
+    if (accion === 'cerrarOT')             return handleCerrarOT(data);
+    return jsonResp({ ok: false, error: 'Accion desconocida: ' + accion });
+  } catch (err) {
+    return jsonResp({ ok: false, error: err.message });
+  }
+}
+
+// ── ENDPOINTS GET PUBLICOS ─────────────────────────────────────
+
+function handleListaProyectos() {
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(H_PROYECTOS);
+  if (!sh) return jsonResp({ ok: false, error: 'Hoja CAT_PROYECTOS no encontrada' });
+  const rows = sh.getDataRange().getValues();
+  const proyectos = [];
+  for (let i = 3; i < rows.length; i++) {
+    const nombre = String(rows[i][0] || '').trim();
+    const activo = String(rows[i][1] || '').trim().toUpperCase();
+    if (nombre && activo === 'SI') proyectos.push(nombre);
+  }
+  return jsonResp({ ok: true, proyectos: proyectos });
+}
+
+function handleListaEtapas() {
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(H_CAT_CHECKL);
+  if (!sh) return jsonResp({ ok: false, error: 'Hoja CAT_OT_CHECKLIST no encontrada' });
+  const rows = sh.getDataRange().getValues();
+  const etapasSet = {};
+  const orden = [];
+  for (let i = 3; i < rows.length; i++) {
+    const etapa  = String(rows[i][0] || '').trim();
+    const activo = String(rows[i][3] || '').trim().toUpperCase();
+    if (etapa && activo === 'SI' && !etapasSet[etapa]) {
+      etapasSet[etapa] = true;
+      orden.push(etapa);
+    }
+  }
+  return jsonResp({ ok: true, etapas: orden });
+}
+
+function handleListaChecklist(etapa) {
+  etapa = String(etapa || '').trim().toUpperCase();
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(H_CAT_CHECKL);
+  if (!sh) return jsonResp({ ok: false, error: 'Hoja CAT_OT_CHECKLIST no encontrada' });
+  const rows = sh.getDataRange().getValues();
+  // Estructura por seccion preservando orden de aparicion
+  const seccionesMap = {};
+  const seccionesOrden = [];
+  for (let i = 3; i < rows.length; i++) {
+    const e   = String(rows[i][0] || '').trim().toUpperCase();
+    const sec = String(rows[i][1] || '').trim();
+    const itm = String(rows[i][2] || '').trim();
+    const act = String(rows[i][3] || '').trim().toUpperCase();
+    if (!e || !sec || !itm || act !== 'SI') continue;
+    if (etapa && e !== etapa) continue;
+    if (!seccionesMap[sec]) {
+      seccionesMap[sec] = [];
+      seccionesOrden.push(sec);
+    }
+    seccionesMap[sec].push(itm);
+  }
+  const secciones = seccionesOrden.map(function(s) {
+    return { seccion: s, items: seccionesMap[s] };
+  });
+  return jsonResp({ ok: true, etapa: etapa, secciones: secciones });
+}
+
+function handleGetLogo() {
+  try {
+    const blob = DriveApp.getFileById(LOGO_FILE_ID).getBlob();
+    const b64  = Utilities.base64Encode(blob.getBytes());
+    const mime = blob.getContentType() || 'image/png';
+    return jsonResp({ ok: true, mime: mime, base64: b64 });
+  } catch (err) {
+    return jsonResp({ ok: false, error: 'No se pudo cargar el logo: ' + err.message });
+  }
+}
+
+function handleFirmaImg(idFirma) {
+  idFirma = String(idFirma || '').trim();
+  if (!idFirma) return jsonResp({ ok: false, error: 'id requerido' });
+  try {
+    const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(H_FIRMAS);
+    if (!sh) return jsonResp({ ok: false, error: 'Hoja firmas no encontrada' });
+    const rows = sh.getDataRange().getValues();
+    let fileId = '';
+    for (let i = 1; i < rows.length; i++) {
+      if (String(rows[i][0]) === idFirma) { fileId = String(rows[i][4] || ''); break; }
+    }
+    if (!fileId) return jsonResp({ ok: false, error: 'Firma no encontrada' });
+    const blob = DriveApp.getFileById(fileId).getBlob();
+    const b64  = Utilities.base64Encode(blob.getBytes());
+    return jsonResp({ ok: true, mime: blob.getContentType(), base64: b64 });
+  } catch (err) {
+    return jsonResp({ ok: false, error: err.message });
+  }
+}
+
+function handleVerificar(folio) {
+  folio = String(folio || '').trim();
+  if (!folio) return htmlResp('<h2>Folio invalido</h2>');
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const shOT = ss.getSheetByName(H_OT);
+  const rows = shOT.getDataRange().getValues();
+  let ot = null;
+  for (let i = 1; i < rows.length; i++) {
+    if (String(rows[i][0]) === folio) {
+      ot = {
+        folio:        rows[i][0],
+        fecha:        rows[i][1],
+        proyecto:     rows[i][2],
+        etapa:        rows[i][3],
+        responsable:  rows[i][4],
+        ot_interna:   rows[i][5],
+        entrega:      rows[i][6],
+        tiempo:       rows[i][7],
+        inspeccion:   rows[i][8],
+        observaciones:rows[i][9],
+        estado:       rows[i][10],
+        creado_por:   rows[i][11],
+        aprobado_por: rows[i][12],
+        fecha_aprob:  rows[i][13],
+        cerrado_por:  rows[i][14],
+        fecha_cierre: rows[i][15]
+      };
+      break;
+    }
+  }
+  if (!ot) return htmlResp(
+    '<!DOCTYPE html><html><head><meta charset="UTF-8">' +
+    '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+    '<title>CAMI - OT no encontrada</title>' +
+    '<style>body{font-family:Arial,sans-serif;background:#EFEFED;padding:40px;text-align:center;color:#1a1a18}' +
+    '.box{max-width:400px;margin:0 auto;background:#fff;border-radius:10px;padding:32px;border:1px solid #d3d1c7}' +
+    'h2{color:#A32D2D;margin-bottom:12px}.folio{font-family:monospace;color:#888;font-size:13px;margin-top:8px}' +
+    '</style></head><body><div class="box"><h2>OT no encontrada</h2>' +
+    '<div class="folio">Folio consultado: ' + escapeHtml(folio) + '</div>' +
+    '</div></body></html>'
+  );
+
+  const html =
+    '<!DOCTYPE html><html><head><meta charset="UTF-8">' +
+    '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+    '<title>Verificacion OT - ' + escapeHtml(ot.folio) + '</title>' +
+    '<style>body{font-family:Arial,sans-serif;background:#EFEFED;margin:0;padding:20px;color:#1a1a18}' +
+    '.box{max-width:500px;margin:0 auto;background:#fff;border-radius:10px;padding:24px;border:1px solid #d3d1c7}' +
+    'h1{font-size:18px;color:#4A4A48;margin-bottom:16px;border-bottom:1px solid #d3d1c7;padding-bottom:8px}' +
+    '.row{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #f0eee8;font-size:14px;gap:12px}' +
+    '.row:last-child{border-bottom:none}' +
+    '.label{color:#888780;text-transform:uppercase;font-size:11px;letter-spacing:.06em}' +
+    '.val{font-weight:700;color:#1a1a18;text-align:right}' +
+    '.estado{display:inline-block;padding:4px 10px;border-radius:4px;font-size:12px;font-weight:700}' +
+    '.e-borrador{background:#EFEFED;color:#666}' +
+    '.e-pendiente{background:#FFF4D6;color:#8B6914}' +
+    '.e-aprobada,.e-completada{background:#EAF3DE;color:#3B6D11}' +
+    '.e-en_proceso{background:#E8F0F8;color:#2A5A8C}' +
+    '.e-rechazada{background:#FCEBEB;color:#A32D2D}' +
+    '</style></head><body><div class="box">' +
+    '<h1>Verificacion de Orden de Trabajo</h1>' +
+    '<div class="row"><span class="label">Folio</span><span class="val">' + escapeHtml(ot.folio) + '</span></div>' +
+    '<div class="row"><span class="label">Fecha</span><span class="val">' + formatDate(ot.fecha) + '</span></div>' +
+    '<div class="row"><span class="label">Proyecto</span><span class="val">' + escapeHtml(ot.proyecto) + '</span></div>' +
+    '<div class="row"><span class="label">Etapa</span><span class="val">' + escapeHtml(ot.etapa) + '</span></div>' +
+    '<div class="row"><span class="label">Responsable</span><span class="val">' + escapeHtml(ot.responsable) + '</span></div>' +
+    '<div class="row"><span class="label">Estado</span><span class="val"><span class="estado ' + estadoClass(ot.estado) + '">' + escapeHtml(ot.estado) + '</span></span></div>' +
+    (ot.aprobado_por ? '<div class="row"><span class="label">Aprobado por</span><span class="val">' + escapeHtml(ot.aprobado_por) + '</span></div>' : '') +
+    (ot.fecha_aprob  ? '<div class="row"><span class="label">Fecha aprobacion</span><span class="val">' + formatDate(ot.fecha_aprob) + '</span></div>' : '') +
+    (ot.cerrado_por  ? '<div class="row"><span class="label">Cerrado por</span><span class="val">' + escapeHtml(ot.cerrado_por) + '</span></div>' : '') +
+    (ot.fecha_cierre ? '<div class="row"><span class="label">Fecha cierre</span><span class="val">' + formatDate(ot.fecha_cierre) + '</span></div>' : '') +
+    '</div></body></html>';
+  return htmlResp(html);
+}
+
+// ── ENDPOINT POST: CREAR OT ────────────────────────────────────
+
+function handleCrearOT(data) {
+  const auth = autenticarConApp(data.token, APP_KEY);
+  if (!auth.ok) return jsonResp(auth);
+  const usuario = auth.usuario;
+
+  const fecha       = String(data.fecha || '').trim();
+  const proyecto    = String(data.proyecto || '').trim();
+  const etapa       = String(data.etapa || '').trim();
+  const responsable = String(data.responsable || '').trim();
+  const otInterna   = String(data.ot_interna || '').trim();
+  const entrega     = String(data.entrega || '').trim();
+  const tiempo      = String(data.tiempo || '').trim();
+  const inspeccion  = String(data.inspeccion || '').trim();
+  const observaciones = String(data.observaciones || '').trim();
+  const materiales  = Array.isArray(data.materiales) ? data.materiales : [];
+  const pdfB64      = String(data.pdf || '').trim();
+
+  if (!fecha)        return jsonResp({ ok: false, error: 'Fecha requerida' });
+  if (!proyecto)     return jsonResp({ ok: false, error: 'Proyecto requerido' });
+  if (!etapa)        return jsonResp({ ok: false, error: 'Etapa requerida' });
+  if (!responsable)  return jsonResp({ ok: false, error: 'Responsable requerido' });
+
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(15000)) {
+    return jsonResp({ ok: false, error: 'Sistema ocupado, intenta de nuevo' });
+  }
+
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const folio = generarFolio(ss, proyecto, fecha);
+
+    // 1. Cabecera en OT
+    const shOT = ss.getSheetByName(H_OT);
+    if (!shOT) return jsonResp({ ok: false, error: 'Hoja OT no encontrada' });
+    shOT.appendRow([
+      folio,                    // A folio
+      new Date(fecha),          // B fecha
+      proyecto,                 // C proyecto
+      etapa,                    // D etapa
+      responsable,              // E responsable
+      otInterna,                // F ot_interna (numero/referencia opcional)
+      entrega,                  // G entrega
+      tiempo,                   // H tiempo
+      inspeccion,               // I inspeccion (texto libre)
+      observaciones,            // J observaciones
+      'PENDIENTE_APROBACION',   // K estado
+      usuario.nombre,           // L creado_por
+      '',                       // M aprobado_por
+      '',                       // N fecha_aprob
+      '',                       // O cerrado_por
+      '',                       // P fecha_cierre
+      '',                       // Q pdf_url
+      new Date()                // R timestamp
+    ]);
+    const filaOT = shOT.getLastRow();
+
+    // 2. Materiales
+    if (materiales.length) {
+      const shMat = ss.getSheetByName(H_MATERIALES);
+      if (shMat) {
+        const filas = materiales.map(function(m, i) {
+          return [
+            folio + '-M' + (i + 1),
+            folio,
+            String(m.descripcion || '').trim(),
+            parseFloat(m.cantidad) || 0,
+            String(m.unidad || '').trim(),
+            new Date()
+          ];
+        });
+        shMat.getRange(shMat.getLastRow() + 1, 1, filas.length, 6).setValues(filas);
+      }
+    }
+
+    // 3. Log
+    appendLog(ss, folio, 'CREADA', usuario.nombre, '');
+
+    // 4. PDF en Drive
+    let pdfUrl = '';
+    if (pdfB64) {
+      const blob = Utilities.newBlob(
+        Utilities.base64Decode(pdfB64),
+        'application/pdf',
+        folio + '.pdf'
+      );
+      const file = DriveApp.getFolderById(FOLDER_ID).createFile(blob);
+      const meta = {
+        folio: folio,
+        fecha: fecha,
+        proyecto: proyecto,
+        etapa: etapa,
+        responsable: responsable,
+        ot_interna: otInterna,
+        entrega: entrega,
+        tiempo: tiempo,
+        inspeccion: inspeccion,
+        observaciones: observaciones,
+        materiales: materiales,
+        usuario: usuario.nombre,
+        timestamp: new Date().toISOString()
+      };
+      file.setDescription(META_PREFIX + JSON.stringify(meta));
+      pdfUrl = file.getUrl();
+      shOT.getRange(filaOT, 17).setValue(pdfUrl);
+    }
+
+    return jsonResp({ ok: true, folio: folio, url: pdfUrl, usuario: usuario.nombre });
+
+  } catch (err) {
+    return jsonResp({ ok: false, error: 'Error al crear OT: ' + err.message });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// ── ENDPOINTS POST: SELECTOR DRIVE ─────────────────────────────
+
+function handleListarOTs(data) {
+  const auth = autenticarConApp(data.token, APP_KEY);
+  if (!auth.ok) return jsonResp(auth);
+
+  try {
+    const folder = DriveApp.getFolderById(FOLDER_ID);
+    const it = folder.getFilesByType(MimeType.PDF);
+    const archivos = [];
+    while (it.hasNext()) {
+      const f = it.next();
+      archivos.push({
+        id:    f.getId(),
+        name:  f.getName(),
+        fecha: f.getDateCreated().toISOString()
+      });
+    }
+    archivos.sort(function(a, b) { return b.fecha.localeCompare(a.fecha); });
+    return jsonResp({ ok: true, archivos: archivos });
+  } catch (err) {
+    return jsonResp({ ok: false, error: 'Error listando Drive: ' + err.message });
+  }
+}
+
+function handleDescargarOT(data) {
+  const auth = autenticarConApp(data.token, APP_KEY);
+  if (!auth.ok) return jsonResp(auth);
+
+  const fileId = String(data.fileId || '').trim();
+  if (!fileId) return jsonResp({ ok: false, error: 'fileId requerido' });
+
+  try {
+    const file = DriveApp.getFileById(fileId);
+    const parents = file.getParents();
+    let autorizada = false;
+    while (parents.hasNext()) {
+      if (parents.next().getId() === FOLDER_ID) { autorizada = true; break; }
+    }
+    if (!autorizada) return jsonResp({ ok: false, error: 'Archivo no autorizado' });
+
+    const blob = file.getBlob();
+    const b64 = Utilities.base64Encode(blob.getBytes());
+    return jsonResp({ ok: true, name: file.getName(), base64: b64 });
+  } catch (err) {
+    return jsonResp({ ok: false, error: 'Error descargando: ' + err.message });
+  }
+}
+
+// ── ENDPOINTS POST: APROBACION ─────────────────────────────────
+
+function handleListarPorAprobar(data) {
+  const auth = autenticarConApp(data.token, APP_KEY_APROBAR);
+  if (!auth.ok) return jsonResp(auth);
+
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const ots = leerOTsConDetalle(ss, function(estado) {
+      return estado === 'PENDIENTE_APROBACION';
+    });
+    return jsonResp({ ok: true, ots: ots });
+  } catch (err) {
+    return jsonResp({ ok: false, error: err.message });
+  }
+}
+
+function handleAprobarOT(data) {
+  const auth = autenticarConApp(data.token, APP_KEY_APROBAR);
+  if (!auth.ok) return jsonResp(auth);
+
+  const folio    = String(data.folio || '').trim();
+  const firmaB64 = String(data.firma || '').trim();
+  if (!folio)    return jsonResp({ ok: false, error: 'folio requerido' });
+  if (!firmaB64) return jsonResp({ ok: false, error: 'firma requerida' });
+
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(15000)) {
+    return jsonResp({ ok: false, error: 'Sistema ocupado, intenta de nuevo' });
+  }
+
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const shOT = ss.getSheetByName(H_OT);
+    const ubicado = ubicarOT(shOT, folio);
+    if (!ubicado.fila) return jsonResp({ ok: false, error: 'OT no encontrada' });
+    if (ubicado.estado !== 'PENDIENTE_APROBACION') {
+      return jsonResp({ ok: false, error: 'Esta OT ya esta en estado ' + ubicado.estado });
+    }
+
+    // Guardar firma
+    const idFirma = guardarFirma(ss, folio, 'APROBACION', auth.usuario.nombre, firmaB64);
+
+    // Actualizar cabecera
+    shOT.getRange(ubicado.fila, 11).setValue('APROBADA');
+    shOT.getRange(ubicado.fila, 13).setValue(auth.usuario.nombre);
+    shOT.getRange(ubicado.fila, 14).setValue(new Date());
+
+    appendLog(ss, folio, 'APROBADA', auth.usuario.nombre, idFirma);
+
+    return jsonResp({ ok: true, folio: folio, estado: 'APROBADA', id_firma: idFirma });
+  } catch (err) {
+    return jsonResp({ ok: false, error: err.message });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function handleRechazarOT(data) {
+  const auth = autenticarConApp(data.token, APP_KEY_APROBAR);
+  if (!auth.ok) return jsonResp(auth);
+
+  const folio  = String(data.folio || '').trim();
+  const motivo = String(data.motivo || '').trim();
+  if (!folio)  return jsonResp({ ok: false, error: 'folio requerido' });
+  if (!motivo) return jsonResp({ ok: false, error: 'Motivo requerido' });
+
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(15000)) {
+    return jsonResp({ ok: false, error: 'Sistema ocupado, intenta de nuevo' });
+  }
+
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const shOT = ss.getSheetByName(H_OT);
+    const ubicado = ubicarOT(shOT, folio);
+    if (!ubicado.fila) return jsonResp({ ok: false, error: 'OT no encontrada' });
+    if (ubicado.estado !== 'PENDIENTE_APROBACION') {
+      return jsonResp({ ok: false, error: 'Esta OT ya esta en estado ' + ubicado.estado });
+    }
+
+    shOT.getRange(ubicado.fila, 11).setValue('RECHAZADA');
+    shOT.getRange(ubicado.fila, 13).setValue(auth.usuario.nombre);
+    shOT.getRange(ubicado.fila, 14).setValue(new Date());
+
+    appendLog(ss, folio, 'RECHAZADA', auth.usuario.nombre, motivo);
+
+    return jsonResp({ ok: true, folio: folio, estado: 'RECHAZADA' });
+  } catch (err) {
+    return jsonResp({ ok: false, error: err.message });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// ── ENDPOINTS POST: CIERRE (COMPLETAR) ─────────────────────────
+
+function handleListarPorCerrar(data) {
+  const auth = autenticarConApp(data.token, APP_KEY_CERRAR);
+  if (!auth.ok) return jsonResp(auth);
+
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    // Listar APROBADA o EN_PROCESO (todavia no cerradas)
+    const ots = leerOTsConDetalle(ss, function(estado) {
+      return estado === 'APROBADA' || estado === 'EN_PROCESO';
+    });
+    return jsonResp({ ok: true, ots: ots });
+  } catch (err) {
+    return jsonResp({ ok: false, error: err.message });
+  }
+}
+
+function handleCerrarOT(data) {
+  const auth = autenticarConApp(data.token, APP_KEY_CERRAR);
+  if (!auth.ok) return jsonResp(auth);
+
+  const folio        = String(data.folio || '').trim();
+  const firmaB64     = String(data.firma || '').trim();
+  const checks       = Array.isArray(data.checks) ? data.checks : [];
+  const observaciones= String(data.observaciones_cierre || '').trim();
+  if (!folio)    return jsonResp({ ok: false, error: 'folio requerido' });
+  if (!firmaB64) return jsonResp({ ok: false, error: 'firma del supervisor requerida' });
+
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(15000)) {
+    return jsonResp({ ok: false, error: 'Sistema ocupado, intenta de nuevo' });
+  }
+
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const shOT = ss.getSheetByName(H_OT);
+    const ubicado = ubicarOT(shOT, folio);
+    if (!ubicado.fila) return jsonResp({ ok: false, error: 'OT no encontrada' });
+    if (ubicado.estado !== 'APROBADA' && ubicado.estado !== 'EN_PROCESO') {
+      return jsonResp({ ok: false, error: 'Esta OT no se puede cerrar (estado ' + ubicado.estado + ')' });
+    }
+
+    // 1. Guardar firma de cierre
+    const idFirma = guardarFirma(ss, folio, 'CIERRE', auth.usuario.nombre, firmaB64);
+
+    // 2. Guardar respuestas del checklist
+    if (checks.length) {
+      const shCh = ss.getSheetByName(H_CHECKLIST);
+      if (shCh) {
+        const filas = checks.map(function(c, i) {
+          return [
+            folio + '-CH' + (i + 1),
+            folio,
+            String(c.seccion || '').trim(),
+            String(c.item || '').trim(),
+            c.cumple ? 'SI' : 'NO',
+            String(c.nota || '').trim(),
+            auth.usuario.nombre,
+            new Date()
+          ];
+        });
+        shCh.getRange(shCh.getLastRow() + 1, 1, filas.length, 8).setValues(filas);
+      }
+    }
+
+    // 3. Actualizar cabecera
+    shOT.getRange(ubicado.fila, 11).setValue('COMPLETADA');
+    shOT.getRange(ubicado.fila, 15).setValue(auth.usuario.nombre);
+    shOT.getRange(ubicado.fila, 16).setValue(new Date());
+    if (observaciones) {
+      const obsActual = String(shOT.getRange(ubicado.fila, 10).getValue() || '');
+      const nuevoObs = obsActual
+        ? obsActual + '\n[Cierre]: ' + observaciones
+        : '[Cierre]: ' + observaciones;
+      shOT.getRange(ubicado.fila, 10).setValue(nuevoObs);
+    }
+
+    appendLog(ss, folio, 'COMPLETADA', auth.usuario.nombre, idFirma);
+
+    return jsonResp({ ok: true, folio: folio, estado: 'COMPLETADA', id_firma: idFirma });
+  } catch (err) {
+    return jsonResp({ ok: false, error: err.message });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// ── HELPERS DE NEGOCIO ─────────────────────────────────────────
+
+// Lectura completa de OTs con materiales y firmas, filtrada por estado
+function leerOTsConDetalle(ss, filtroEstado) {
+  const shOT  = ss.getSheetByName(H_OT);
+  const shMat = ss.getSheetByName(H_MATERIALES);
+  const shFir = ss.getSheetByName(H_FIRMAS);
+
+  const rowsOT = shOT.getDataRange().getValues();
+
+  // Indexar materiales y firmas por folio
+  const matsPorOT = {};
+  if (shMat) {
+    const rowsMat = shMat.getDataRange().getValues();
+    for (let i = 1; i < rowsMat.length; i++) {
+      const f = String(rowsMat[i][1] || ''); if (!f) continue;
+      if (!matsPorOT[f]) matsPorOT[f] = [];
+      matsPorOT[f].push({
+        descripcion: rowsMat[i][2],
+        cantidad: parseFloat(rowsMat[i][3]) || 0,
+        unidad: rowsMat[i][4]
+      });
+    }
+  }
+  const firmasPorOT = {};
+  if (shFir) {
+    const rowsFir = shFir.getDataRange().getValues();
+    for (let i = 1; i < rowsFir.length; i++) {
+      const f = String(rowsFir[i][1] || ''); if (!f) continue;
+      if (!firmasPorOT[f]) firmasPorOT[f] = [];
+      firmasPorOT[f].push({
+        id_firma: rowsFir[i][0],
+        tipo: rowsFir[i][2],
+        firmante: rowsFir[i][3],
+        file_id: rowsFir[i][4],
+        fecha: rowsFir[i][5] ? new Date(rowsFir[i][5]).toISOString() : ''
+      });
+    }
+  }
+
+  const ots = [];
+  for (let i = 1; i < rowsOT.length; i++) {
+    const folio = String(rowsOT[i][0] || '');
+    if (!folio) continue;
+    const estado = String(rowsOT[i][10] || '');
+    if (!filtroEstado(estado)) continue;
+    ots.push({
+      folio:        folio,
+      fecha:        rowsOT[i][1] ? new Date(rowsOT[i][1]).toISOString() : '',
+      proyecto:     rowsOT[i][2],
+      etapa:        rowsOT[i][3],
+      responsable:  rowsOT[i][4],
+      ot_interna:   rowsOT[i][5],
+      entrega:      rowsOT[i][6] ? new Date(rowsOT[i][6]).toISOString() : '',
+      tiempo:       rowsOT[i][7],
+      inspeccion:   rowsOT[i][8],
+      observaciones:rowsOT[i][9],
+      estado:       estado,
+      creado_por:   rowsOT[i][11],
+      aprobado_por: rowsOT[i][12],
+      fecha_aprob:  rowsOT[i][13] ? new Date(rowsOT[i][13]).toISOString() : '',
+      cerrado_por:  rowsOT[i][14],
+      fecha_cierre: rowsOT[i][15] ? new Date(rowsOT[i][15]).toISOString() : '',
+      pdf_url:      rowsOT[i][16],
+      materiales:   matsPorOT[folio] || [],
+      firmas:       firmasPorOT[folio] || []
+    });
+  }
+  ots.sort(function(a, b) { return (a.fecha || '').localeCompare(b.fecha || ''); });
+  return ots;
+}
+
+function ubicarOT(shOT, folio) {
+  const rows = shOT.getDataRange().getValues();
+  for (let i = 1; i < rows.length; i++) {
+    if (String(rows[i][0]) === folio) {
+      return { fila: i + 1, estado: String(rows[i][10] || '') };
+    }
+  }
+  return { fila: 0, estado: '' };
+}
+
+function appendLog(ss, folio, evento, usuario, detalle) {
+  try {
+    const sh = ss.getSheetByName(H_LOG);
+    if (!sh) return;
+    sh.appendRow([new Date(), folio, evento, usuario, detalle || '']);
+  } catch (e) {
+    // No bloquear flujo principal por error en log
+  }
+}
+
+// Guarda firma PNG en Drive y registra metadata. Devuelve id_firma.
+function guardarFirma(ss, folio, tipo, firmante, firmaB64) {
+  // Limpiar header data:image/png;base64,
+  let b64 = firmaB64;
+  const idx = b64.indexOf(',');
+  if (idx > -1) b64 = b64.substring(idx + 1);
+
+  const blob = Utilities.newBlob(
+    Utilities.base64Decode(b64),
+    'image/png',
+    folio + '_' + tipo + '_' + Date.now() + '.png'
+  );
+
+  const folder = obtenerFolderFirmas();
+  const file = folder.createFile(blob);
+  const fileId = file.getId();
+
+  const sh = ss.getSheetByName(H_FIRMAS);
+  if (!sh) throw new Error('Hoja OT_FIRMAS no encontrada');
+  const idFirma = 'F' + String(sh.getLastRow()).padStart(5, '0');
+  sh.appendRow([
+    idFirma,
+    folio,
+    tipo,
+    firmante,
+    fileId,
+    new Date()
+  ]);
+  return idFirma;
+}
+
+function obtenerFolderFirmas() {
+  const padre = DriveApp.getFolderById(FOLDER_ID);
+  const subs = padre.getFoldersByName(FIRMAS_SUBFOLDER);
+  if (subs.hasNext()) return subs.next();
+  return padre.createFolder(FIRMAS_SUBFOLDER);
+}
+
+// ── HELPER: AUTENTICACION CON APP KEY ──────────────────────────
+
+function autenticarConApp(token, appKey) {
+  token = String(token || '').trim();
+  if (!token) return { ok: false, error: 'Sesion requerida' };
+  const usuario = validarTokenCentral(token);
+  if (!usuario) return { ok: false, error: 'Sesion invalida o expirada' };
+  if (usuario.apps && usuario.apps.length && usuario.apps.indexOf(appKey) === -1) {
+    return { ok: false, error: 'No tienes permiso para esta accion' };
+  }
+  return { ok: true, usuario: usuario };
+}
+
+// ── FOLIO ──────────────────────────────────────────────────────
+
+// Consecutivo GLOBAL por proyecto (ignora la fecha)
+function generarFolio(ss, proyecto, fechaStr) {
+  const proyectoSafe = String(proyecto).replace(/\s+/g, '_').toUpperCase();
+  const prefijo = 'OT-' + proyectoSafe + '-';
+
+  const shOT = ss.getSheetByName(H_OT);
+  const ultFila = shOT.getLastRow();
+  let maxN = 0;
+  if (ultFila > 1) {
+    const folios = shOT.getRange(2, 1, ultFila - 1, 1).getValues();
+    for (let i = 0; i < folios.length; i++) {
+      const f = String(folios[i][0] || '').trim();
+      if (f.indexOf(prefijo) !== 0) continue;
+      const m = f.substring(prefijo.length).match(/^(\d+)/);
+      if (m) {
+        const n = parseInt(m[1], 10);
+        if (!isNaN(n) && n > maxN) maxN = n;
+      }
+    }
+  }
+  const nnn = String(maxN + 1).padStart(3, '0');
+  return 'OT-' + proyectoSafe + '-' + nnn + '-' + fechaStr;
+}
+
+// ── VALIDACION DE TOKEN VIA HTTP AL CENTRAL ────────────────────
+
+function validarTokenCentral(token) {
+  try {
+    const resp = UrlFetchApp.fetch(CENTRAL_URL, {
+      method: 'post',
+      contentType: 'application/json',
+      payload: JSON.stringify({ action: 'validarToken', token: token }),
+      muteHttpExceptions: true,
+      followRedirects: true
+    });
+    if (resp.getResponseCode() !== 200) return null;
+    const body = JSON.parse(resp.getContentText());
+    if (body && body.ok && body.usuario) return body.usuario;
+    return null;
+  } catch (err) {
+    console.error('Error validando token:', err.message);
+    return null;
+  }
+}
+
+// ── HELPERS ────────────────────────────────────────────────────
+
+function jsonResp(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+function htmlResp(html) {
+  return HtmlService.createHtmlOutput(html)
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+}
+
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function formatDate(d) {
+  if (!d) return '';
+  const dt = (d instanceof Date) ? d : new Date(d);
+  if (isNaN(dt.getTime())) return String(d);
+  const dd = String(dt.getDate()).padStart(2, '0');
+  const mm = String(dt.getMonth() + 1).padStart(2, '0');
+  const yy = dt.getFullYear();
+  return dd + '/' + mm + '/' + yy;
+}
+
+function estadoClass(estado) {
+  const e = String(estado || '').toLowerCase();
+  if (e === 'borrador')              return 'e-borrador';
+  if (e.indexOf('pendiente') !== -1) return 'e-pendiente';
+  if (e === 'aprobada')              return 'e-aprobada';
+  if (e === 'completada')            return 'e-completada';
+  if (e === 'en_proceso')            return 'e-en_proceso';
+  if (e === 'rechazada')             return 'e-rechazada';
+  return 'e-borrador';
+}
+
+// ── UTILIDADES MANUALES (debug) ────────────────────────────────
+
+function testListaProyectos() { Logger.log(handleListaProyectos().getContent()); }
+function testListaEtapas()    { Logger.log(handleListaEtapas().getContent()); }
+function testListaChecklist() { Logger.log(handleListaChecklist('CORTE').getContent()); }
+function testFolio() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  Logger.log(generarFolio(ss, 'CUOCO', '2026-04-27'));
+}
