@@ -174,7 +174,7 @@ textarea{resize:vertical;min-height:60px}
           </div>
           <div>
             <label class="fl">Etapa <span class="req">*</span></label>
-            <select id="etapa" onchange="renderChecklistPreview()"><option value="">Cargando...</option></select>
+            <select id="etapa" onchange="onEtapaChange()"><option value="">Cargando...</option></select>
           </div>
           <div>
             <label class="fl">Fecha <span class="req">*</span></label>
@@ -427,6 +427,8 @@ let _currentTab = 'crear';
 let _firmaCanvas = null;   // referencia al canvas activo (modal aprobar/cerrar)
 let _proyectosCache = [];  // array de { proyecto, cliente, direccion, supervisor, modo }
 let _proyectoActual = null; // objeto del proyecto seleccionado (para acceder a modo en el PDF)
+let _etapasCache = [];      // array de { etapa, codigo, orden }
+let _etapaActual = null;    // objeto de la etapa seleccionada
 
 document.getElementById('fecha').value = new Date().toISOString().split('T')[0];
 
@@ -564,15 +566,25 @@ async function cargarEtapas() {
     const r = await fetch(SCRIPT_URL + '?accion=listaEtapas');
     const d = await r.json();
     const sel = document.getElementById('etapa');
-    if (d.ok && d.etapas) {
+    if (d.ok && (Array.isArray(d.etapas_detalle) || Array.isArray(d.etapas))) {
+      _etapasCache = Array.isArray(d.etapas_detalle)
+        ? d.etapas_detalle
+        : d.etapas.map(s => ({ etapa: s, codigo: '', orden: 999 }));
       sel.innerHTML = '<option value="">Selecciona una etapa...</option>' +
-        d.etapas.map(e => `<option value="${escapeAttr(e)}">${escapeHtml(e)}</option>`).join('');
+        _etapasCache.map(e => `<option value="${escapeAttr(e.etapa)}">${escapeHtml(e.etapa)}</option>`).join('');
     } else {
       sel.innerHTML = '<option value="">Error cargando</option>';
     }
   } catch (e) {
     document.getElementById('etapa').innerHTML = '<option value="">Error de red</option>';
   }
+}
+
+function onEtapaChange() {
+  const nombre = document.getElementById('etapa').value;
+  const e = _etapasCache.find(x => x.etapa === nombre);
+  _etapaActual = e || null;
+  renderChecklistPreview();
 }
 
 async function cargarChecklist(etapa) {
@@ -690,6 +702,7 @@ function recolectar() {
     fecha:        document.getElementById('fecha').value,
     proyecto:     document.getElementById('proyecto').value,
     etapa:        document.getElementById('etapa').value,
+    codigo_etapa: _etapaActual ? _etapaActual.codigo : '',
     cliente:      document.getElementById('cliente').value.trim(),
     supervisor:   document.getElementById('supervisor').value.trim(),
     direccion:    document.getElementById('direccion').value.trim(),
@@ -734,7 +747,7 @@ function aplicarDatos(d) {
   tbody.innerHTML = '';
   if (Array.isArray(d.materiales) && d.materiales.length) d.materiales.forEach(m => addMaterial(m));
   else addMaterial();
-  if (d.etapa) renderChecklistPreview();
+  if (d.etapa) onEtapaChange();
 }
 
 // ── SELECTOR DRIVE ────────────────────────────────────────────
