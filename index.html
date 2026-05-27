@@ -259,7 +259,7 @@ textarea{resize:vertical;min-height:60px}
       </div>
 
       <div class="btn-row">
-        <button class="btn-pdf" id="btn-submit" onclick="enviarOT()">Enviar a Aprobacion</button>
+        <button class="btn-pdf" id="btn-submit" onclick="enviarOT()">Crear OT</button>
         <button class="btn-pdf" type="button" onclick="abrirSelectorDrive()">Cargar desde Drive</button>
         <button class="btn-pdf" type="button" onclick="document.getElementById('pdf-import').click()">Cargar PDF local</button>
         <input type="file" id="pdf-import" accept="application/pdf" style="display:none" onchange="cargarDesdePDF(event)"/>
@@ -371,7 +371,7 @@ textarea{resize:vertical;min-height:60px}
       <div style="text-align:center;margin-bottom:14px">
         <div style="font-size:36px;color:#3B6D11">✓</div>
         <div style="font-size:14px;font-weight:700;color:#1a1a18;margin-top:6px" id="exito-folio">FOLIO</div>
-        <div style="font-size:11px;color:#4A4A48;margin-top:4px">Estado: Pendiente de aprobacion</div>
+        <div style="font-size:11px;color:#4A4A48;margin-top:4px">Estado: Aprobada — lista para taller</div>
       </div>
       <p style="font-size:12px;color:#4A4A48;text-align:center">El PDF se guardo en Drive. ¿Que quieres hacer con tu copia local?</p>
       <div class="modal-actions" style="flex-direction:column;gap:8px">
@@ -853,7 +853,7 @@ async function enviarOT() {
   } catch (err) {
     showToast('Error: ' + escapeHtml(err.message), 'err');
   } finally {
-    btn.disabled = false; btn.textContent = 'Enviar a Aprobacion';
+    btn.disabled = false; btn.textContent = 'Crear OT';
   }
 }
 
