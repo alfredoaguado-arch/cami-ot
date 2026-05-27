@@ -301,7 +301,7 @@ function handleCrearOT(data) {
 
   try {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
-    const folio = generarFolio(ss, proyecto, fecha);
+    const folio = generarFolio(ss, proyecto, fecha, etapa);
 
     const estadoInicial   = REQUIERE_APROBACION ? 'PENDIENTE_APROBACION' : 'APROBADA';
     const aprobadoPorAuto = REQUIERE_APROBACION ? '' : 'SISTEMA-AUTO';
@@ -771,13 +771,40 @@ function autenticarConApp(token, appKey) {
 
 // ── FOLIO ──────────────────────────────────────────────────────
 
-// Consecutivo GLOBAL por proyecto (ignora la fecha)
-function generarFolio(ss, proyecto, fechaStr) {
-  const proyectoSafe = String(proyecto).replace(/\s+/g, '_').toUpperCase();
-  const prefijo = 'OT-' + proyectoSafe + '-';
+// Resuelve el codigo corto de 3 letras de una etapa consultando CAT_OT_CHECKLIST (col E).
+// Si la etapa no tiene codigo capturado, devuelve las primeras 3 letras en mayusculas.
+function resolverCodigoEtapa(ss, etapa) {
+  const etapaUp = String(etapa || '').trim().toUpperCase();
+  if (!etapaUp) return '';
+  const sh = ss.getSheetByName(H_CAT_CHECKL);
+  if (sh) {
+    const rows = sh.getDataRange().getValues();
+    for (let i = 3; i < rows.length; i++) {
+      const e   = String(rows[i][0] || '').trim().toUpperCase();
+      const cod = String(rows[i][4] || '').trim().toUpperCase();
+      if (e === etapaUp && cod) return cod;
+    }
+  }
+  return etapaUp.substring(0, 3);
+}
 
+// Consecutivo GLOBAL por prefijo (ignora la fecha).
+// Formato HARRISON-OWOW: HAR-<CODIGO_ETAPA>-NNN-YYYY-MM-DD (correlativo por proceso).
+// Resto de proyectos:    OT-<PROYECTO>-NNN-YYYY-MM-DD.
+function generarFolio(ss, proyecto, fechaStr, etapa) {
   const shOT = ss.getSheetByName(H_OT);
   const ultFila = shOT.getLastRow();
+
+  let prefijo;
+  if (proyecto === 'HARRISON-OWOW') {
+    if (!etapa) throw new Error('Etapa requerida para folio HARRISON-OWOW');
+    const codigoEtapa = resolverCodigoEtapa(ss, etapa);
+    prefijo = 'HAR-' + codigoEtapa + '-';
+  } else {
+    const proyectoSafe = String(proyecto).replace(/\s+/g, '_').toUpperCase();
+    prefijo = 'OT-' + proyectoSafe + '-';
+  }
+
   let maxN = 0;
   if (ultFila > 1) {
     const folios = shOT.getRange(2, 1, ultFila - 1, 1).getValues();
@@ -792,7 +819,7 @@ function generarFolio(ss, proyecto, fechaStr) {
     }
   }
   const nnn = String(maxN + 1).padStart(3, '0');
-  return 'OT-' + proyectoSafe + '-' + nnn + '-' + fechaStr;
+  return prefijo + nnn + '-' + fechaStr;
 }
 
 // ── VALIDACION DE TOKEN VIA HTTP AL CENTRAL ────────────────────
@@ -859,7 +886,7 @@ function estadoClass(estado) {
 
 function testListaProyectos() { Logger.log(handleListaProyectos().getContent()); }
 function testListaEtapas()    { Logger.log(handleListaEtapas().getContent()); }
-function testListaChecklist() { Logger.log(handleListaChecklist('CORTE').getContent()); }
+function testListaChecklist() { Logger.log(handleListaChecklist('HABILITADO').getContent()); }
 function testFolio() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   Logger.log(generarFolio(ss, 'CUOCO', '2026-04-27'));
