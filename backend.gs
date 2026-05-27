@@ -1,5 +1,5 @@
 // ================================================================
-// CAMI - Apps Script ORDENES DE TRABAJO v2.0
+// CAMI - Apps Script ORDENES DE TRABAJO v2.4
 // Bound al Sheet de OT (CAMI_OT_DB) - ID 12WU13Qp2DPXjaqAMuXg-yYYizuKqMU1K04v0nw0Ud7o
 //
 // REDISENIO COMPLETO vs v1.3:
@@ -13,6 +13,18 @@
 //   - Firmas digitales (PNG en Drive, refs en Sheet) capturadas en canvas
 //   - Recepcion del responsable: manual (recuadro vacio en PDF impreso)
 //   - Sello de calidad 5x5cm: recuadro vacio para sello fisico
+//
+// REDISEÑO v2.0 → v2.4 (Sprint OWOW, mayo 2026):
+//   - REQUIERE_APROBACION flag: OTs nuevas pasan directo a APROBADA sin firma de aprobación.
+//     Las OTs viejas en PENDIENTE_APROBACION siguen siendo procesables.
+//   - Catálogo CAT_OT_CHECKLIST extendido con columnas codigo (3 letras) y orden (1-9, 99).
+//     handleListaEtapas devuelve etapas_detalle ordenado; etapas (legacy) preservado.
+//     handleListaChecklist devuelve codigo de la etapa.
+//   - Folio especial para proyecto HARRISON-OWOW: HAR-{PROC}-NNN-YYYY-MM-DD.
+//     Correlativo por proyecto+proceso, sin reset. Resto de proyectos sin cambios.
+//   - Catálogo CAT_PROYECTOS extendido con columnas cliente, direccion, supervisor, modo.
+//     handleListaProyectos devuelve proyectos_detalle; proyectos (legacy) preservado.
+//     modo normalizado a MAYUSCULAS.
 //
 // App keys:
 //   - ot           : crear OT (supervisores y arriba)
@@ -31,6 +43,8 @@
 // Folder Drive PDFs OT: 1WxxF5AfU6XTWT_SSisWqhTGzQdouadRL
 // Folder Drive Firmas:  (subcarpeta automatica dentro del folder de OT)
 // ================================================================
+
+const MODULE_VERSION = '2.4';
 
 const CENTRAL_URL  = 'https://script.google.com/macros/s/AKfycbw8Ucc9J3_TQcsAR0tn2Lk5DBN2bPWG6HF2pm3GfoEwa2NlRFQn5qZPVj7gy-IaLBSg/exec';
 const FOLDER_ID    = '1WxxF5AfU6XTWT_SSisWqhTGzQdouadRL';
@@ -68,7 +82,7 @@ function doGet(e) {
     if (accion === 'getLogo')          return handleGetLogo();
     if (accion === 'verificar')        return handleVerificar(e.parameter.folio || '');
     if (accion === 'firma')            return handleFirmaImg(e.parameter.id || '');
-    if (accion === 'ping')             return jsonResp({ ok: true, version: '2.0', module: 'cami-ot' });
+    if (accion === 'ping')             return jsonResp({ ok: true, version: MODULE_VERSION, module: 'cami-ot' });
     return jsonResp({ ok: false, error: 'Accion desconocida: ' + accion });
   } catch (err) {
     return jsonResp({ ok: false, error: err.message });
