@@ -100,13 +100,23 @@ function handleListaProyectos() {
   const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(H_PROYECTOS);
   if (!sh) return jsonResp({ ok: false, error: 'Hoja CAT_PROYECTOS no encontrada' });
   const rows = sh.getDataRange().getValues();
-  const proyectos = [];
+  const proyectosDetalle = [];
   for (let i = 3; i < rows.length; i++) {
     const nombre = String(rows[i][0] || '').trim();
     const activo = String(rows[i][1] || '').trim().toUpperCase();
-    if (nombre && activo === 'SI') proyectos.push(nombre);
+    if (!nombre || activo !== 'SI') continue;
+    proyectosDetalle.push({
+      proyecto:   nombre,
+      cliente:    String(rows[i][2] || '').trim(),
+      direccion:  String(rows[i][3] || '').trim(),
+      supervisor: String(rows[i][4] || '').trim(),
+      modo:       String(rows[i][5] || '').trim().toUpperCase()
+    });
   }
-  return jsonResp({ ok: true, proyectos: proyectos });
+  // proyectos: array legacy de strings (compatibilidad con frontend pre-Fase B). Deprecated.
+  // proyectos_detalle: nueva estructura con cliente, direccion, supervisor, modo.
+  const proyectos = proyectosDetalle.map(function(p) { return p.proyecto; });
+  return jsonResp({ ok: true, proyectos: proyectos, proyectos_detalle: proyectosDetalle });
 }
 
 function handleListaEtapas() {
