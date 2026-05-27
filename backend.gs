@@ -65,6 +65,7 @@ const H_FIRMAS      = 'OT_FIRMAS';
 const H_LOG         = 'OT_LOG';
 const H_PROYECTOS   = 'CAT_PROYECTOS';
 const H_CAT_CHECKL  = 'CAT_OT_CHECKLIST';
+const H_ITEMS_PREFIX = 'CAT_ITEMS_';
 
 const META_PREFIX       = 'CAMI_OT_DATA::';
 const VERIFICACION_PATH = '?accion=verificar&folio=';
@@ -77,6 +78,7 @@ function doGet(e) {
   const accion = (e && e.parameter && e.parameter.accion) || '';
   try {
     if (accion === 'listaProyectos')   return handleListaProyectos();
+    if (accion === 'listaItemsPorProyecto') return handleListaItemsPorProyecto(e.parameter.proyecto || '');
     if (accion === 'listaChecklist')   return handleListaChecklist(e.parameter.etapa || '');
     if (accion === 'listaEtapas')      return handleListaEtapas();
     if (accion === 'getLogo')          return handleGetLogo();
@@ -131,6 +133,35 @@ function handleListaProyectos() {
   // proyectos_detalle: nueva estructura con cliente, direccion, supervisor, modo.
   const proyectos = proyectosDetalle.map(function(p) { return p.proyecto; });
   return jsonResp({ ok: true, proyectos: proyectos, proyectos_detalle: proyectosDetalle });
+}
+
+function handleListaItemsPorProyecto(proyecto) {
+  proyecto = String(proyecto || '').trim();
+  if (!proyecto) return jsonResp({ ok: false, error: 'Proyecto requerido' });
+
+  const nombreHoja = H_ITEMS_PREFIX + proyecto;
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(nombreHoja);
+  if (!sh) return jsonResp({ ok: false, error: 'No hay catalogo de items para proyecto ' + proyecto });
+
+  const rows = sh.getDataRange().getValues();
+  const items = [];
+  for (let i = 1; i < rows.length; i++) {
+    const activo = String(rows[i][9] || '').trim().toUpperCase();
+    if (activo !== 'SI') continue;
+    const mark = String(rows[i][1] || '').trim();
+    if (!mark) continue;
+    items.push({
+      mark:        mark,
+      tipo_codigo: String(rows[i][2] || '').trim(),
+      tipo_nombre: String(rows[i][3] || '').trim(),
+      descripcion: String(rows[i][4] || '').trim(),
+      thickness:   String(rows[i][5] || '').trim(),
+      length:      String(rows[i][6] || '').trim(),
+      qty:         parseFloat(rows[i][7]) || 0,
+      num_plano:   String(rows[i][8] || '').trim()
+    });
+  }
+  return jsonResp({ ok: true, proyecto: proyecto, total: items.length, items: items });
 }
 
 function handleListaEtapas() {
@@ -914,4 +945,7 @@ function testListaChecklist() { Logger.log(handleListaChecklist('HABILITADO').ge
 function testFolio() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   Logger.log(generarFolio(ss, 'CUOCO', '2026-04-27'));
+}
+function testListaItemsHarrison() {
+  Logger.log(handleListaItemsPorProyecto('HARRISON-OWOW').getContent());
 }
