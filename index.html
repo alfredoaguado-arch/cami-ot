@@ -170,7 +170,7 @@ textarea{resize:vertical;min-height:60px}
         <div class="grid3">
           <div>
             <label class="fl">Proyecto <span class="req">*</span></label>
-            <select id="proyecto"><option value="">Cargando...</option></select>
+            <select id="proyecto" onchange="onProyectoChange()"><option value="">Cargando...</option></select>
           </div>
           <div>
             <label class="fl">Etapa <span class="req">*</span></label>
@@ -180,6 +180,20 @@ textarea{resize:vertical;min-height:60px}
             <label class="fl">Fecha <span class="req">*</span></label>
             <input type="date" id="fecha"/>
           </div>
+        </div>
+        <div class="grid2" style="margin-top:14px">
+          <div>
+            <label class="fl">Cliente</label>
+            <input type="text" id="cliente" placeholder="Se autocompleta al elegir proyecto"/>
+          </div>
+          <div>
+            <label class="fl">Supervisor</label>
+            <input type="text" id="supervisor" placeholder="Se autocompleta al elegir proyecto"/>
+          </div>
+        </div>
+        <div style="margin-top:14px">
+          <label class="fl">Direccion</label>
+          <input type="text" id="direccion" placeholder="Se autocompleta al elegir proyecto"/>
         </div>
         <div class="grid3" style="margin-top:14px">
           <div>
@@ -411,6 +425,8 @@ let _otEnCierre = null;
 let _ultimoPDF = null;
 let _currentTab = 'crear';
 let _firmaCanvas = null;   // referencia al canvas activo (modal aprobar/cerrar)
+let _proyectosCache = [];  // array de { proyecto, cliente, direccion, supervisor, modo }
+let _proyectoActual = null; // objeto del proyecto seleccionado (para acceder a modo en el PDF)
 
 document.getElementById('fecha').value = new Date().toISOString().split('T')[0];
 
@@ -522,15 +538,25 @@ async function cargarProyectos() {
     const r = await fetch(SCRIPT_URL + '?accion=listaProyectos');
     const d = await r.json();
     const sel = document.getElementById('proyecto');
-    if (d.ok && d.proyectos) {
+    if (d.ok && Array.isArray(d.proyectos_detalle)) {
+      _proyectosCache = d.proyectos_detalle;
       sel.innerHTML = '<option value="">Selecciona un proyecto...</option>' +
-        d.proyectos.map(p => `<option value="${escapeAttr(p)}">${escapeHtml(p)}</option>`).join('');
+        _proyectosCache.map(p => `<option value="${escapeAttr(p.proyecto)}">${escapeHtml(p.proyecto)}</option>`).join('');
     } else {
       sel.innerHTML = '<option value="">Error cargando</option>';
     }
   } catch (e) {
     document.getElementById('proyecto').innerHTML = '<option value="">Error de red</option>';
   }
+}
+
+function onProyectoChange() {
+  const nombre = document.getElementById('proyecto').value;
+  const p = _proyectosCache.find(x => x.proyecto === nombre);
+  _proyectoActual = p || null;
+  document.getElementById('cliente').value    = p ? p.cliente    : '';
+  document.getElementById('supervisor').value = p ? p.supervisor : '';
+  document.getElementById('direccion').value  = p ? p.direccion  : '';
 }
 
 async function cargarEtapas() {
@@ -664,6 +690,10 @@ function recolectar() {
     fecha:        document.getElementById('fecha').value,
     proyecto:     document.getElementById('proyecto').value,
     etapa:        document.getElementById('etapa').value,
+    cliente:      document.getElementById('cliente').value.trim(),
+    supervisor:   document.getElementById('supervisor').value.trim(),
+    direccion:    document.getElementById('direccion').value.trim(),
+    modo:         _proyectoActual ? _proyectoActual.modo : '',
     responsable:  document.getElementById('responsable').value.trim(),
     ot_interna:   document.getElementById('ot-interna').value.trim(),
     entrega:      document.getElementById('entrega').value,
@@ -676,8 +706,14 @@ function recolectar() {
 }
 function aplicarDatos(d) {
   if (d.fecha)       document.getElementById('fecha').value = d.fecha;
-  if (d.proyecto)    document.getElementById('proyecto').value = d.proyecto;
+  if (d.proyecto) {
+    document.getElementById('proyecto').value = d.proyecto;
+    onProyectoChange();  // autocompleta cliente/supervisor/direccion desde el catalogo actual
+  }
   if (d.etapa)       document.getElementById('etapa').value = d.etapa;
+  if (d.cliente)     document.getElementById('cliente').value = d.cliente;
+  if (d.supervisor)  document.getElementById('supervisor').value = d.supervisor;
+  if (d.direccion)   document.getElementById('direccion').value = d.direccion;
   if (d.responsable) document.getElementById('responsable').value = d.responsable;
   if (d.ot_interna)  document.getElementById('ot-interna').value = d.ot_interna;
   if (d.entrega)     document.getElementById('entrega').value = d.entrega;
