@@ -168,6 +168,10 @@ textarea{resize:vertical;min-height:60px}
     <div class="form-body">
       <div class="section">
         <div class="section-title">Datos de la Orden</div>
+        <div style="margin-bottom:14px">
+          <label class="fl">Titulo de la actividad</label>
+          <input type="text" id="titulo-actividad" maxlength="120" placeholder="Ej: Habilitado de angulos para columnas zona A"/>
+        </div>
         <div class="grid3">
           <div>
             <label class="fl">Proyecto <span class="req">*</span></label>
@@ -955,6 +959,7 @@ function recolectar() {
     entregables.push({ nombre: chk.dataset.ent, marcado: chk.checked });
   });
   return {
+    titulo_actividad: document.getElementById('titulo-actividad').value.trim(),
     fecha:        document.getElementById('fecha').value,
     proyecto:     document.getElementById('proyecto').value,
     etapa:        document.getElementById('etapa').value,
@@ -983,6 +988,7 @@ function recolectar() {
   };
 }
 function aplicarDatos(d) {
+  if (d.titulo_actividad) document.getElementById('titulo-actividad').value = d.titulo_actividad;
   if (d.fecha)       document.getElementById('fecha').value = d.fecha;
   if (d.proyecto) {
     document.getElementById('proyecto').value = d.proyecto;
@@ -1706,6 +1712,14 @@ function construirPDF(doc, d, folio, estado, checklistSecciones, checklistRespue
   doc.text(folio, W - pR, 23, { align: 'right' });
 
   y = headerH + 8;
+
+  // ── Titulo de la actividad (opcional)
+  if (d.titulo_actividad) {
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(13); doc.setTextColor(26, 26, 24);
+    const tituloLines = doc.splitTextToSize(d.titulo_actividad, cW);
+    doc.text(tituloLines, pL, y);
+    y += tituloLines.length * 5.5 + 3;
+  }
 
   // ── Estado badge
   drawEstadoBadge(doc, pL, y - 4, estado);
