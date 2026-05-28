@@ -8,6 +8,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/signature_pad@4.1.7/dist/signature_pad.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:#EFEFED;font-family:'Courier New',monospace;min-height:100vh;padding:1.5rem 1rem}
@@ -81,6 +82,8 @@ textarea{resize:vertical;min-height:60px}
 
 .modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:1000;align-items:center;justify-content:center;padding:1rem}
 .modal-overlay.show{display:flex}
+.spinner{width:34px;height:34px;border:3px solid #e5e3da;border-top-color:#1a1a18;border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
 .modal-box{background:#fff;border-radius:10px;max-width:420px;width:100%;overflow:hidden}
 .modal-box.large{max-width:760px;max-height:90vh;display:flex;flex-direction:column}
 .modal-header{padding:1rem 1.5rem;border-bottom:1px solid #e5e3da;display:flex;justify-content:space-between;align-items:center;background:#1a1a18;color:#fff}
@@ -436,6 +439,16 @@ textarea{resize:vertical;min-height:60px}
         <button class="btn-secondary" onclick="cerrarExitoModal()">Cerrar</button>
       </div>
       <div id="exito-drive-link" style="text-align:center;margin-top:10px;font-size:11px"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: progreso de generacion / anexado de planos -->
+<div id="cargando-modal" class="modal-overlay">
+  <div class="modal-box" style="max-width:340px">
+    <div class="modal-body" style="text-align:center;padding:1.75rem 1.5rem">
+      <div class="spinner" style="margin:0 auto 14px"></div>
+      <div id="cargando-mensaje" style="font-size:13px;color:#1a1a18;font-weight:700;white-space:pre-line">Generando PDF...</div>
     </div>
   </div>
 </div>
@@ -1193,6 +1206,65 @@ async function confirmarFirmaYCrear() {
   await generarOT();
 }
 
+// ── ANEXAR PLANOS AL PDF (pdf-lib) ────────────────────────────
+// P2: descarga un PDF remoto con reintentos. Devuelve ArrayBuffer con los bytes del PDF.
+async function descargarPDFRemoto(url, intentos = 3) {
+  let ultimoError;
+  for (let i = 0; i < intentos; i++) {
+    try {
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const buf = await resp.arrayBuffer();
+      const header = new TextDecoder().decode(new Uint8Array(buf.slice(0, 5)));
+      if (header !== '%PDF-') throw new Error('Respuesta no es un PDF valido (header: ' + header + ')');
+      return buf;
+    } catch (err) {
+      ultimoError = err;
+      if (i < intentos - 1) await new Promise(r => setTimeout(r, 500));
+    }
+  }
+  throw ultimoError;
+}
+
+// P3a: descarga todos los planos del item con progreso. Maneja fallos con confirm().
+// Devuelve un array de ArrayBuffer (solo los planos descargados con exito).
+async function prepararPlanos(planos, onProgress) {
+  const bytesOk = [];
+  const fallos = [];
+  const total = planos.length;
+  for (let i = 0; i < total; i++) {
+    const p = planos[i];
+    const etiqueta = p.codigo || ('Plano ' + (i + 1));
+    if (onProgress) onProgress(i + 1, total, etiqueta);
+    if (!p.url_publica) { fallos.push(etiqueta + ' (sin URL)'); continue; }
+    try {
+      bytesOk.push(await descargarPDFRemoto(p.url_publica));
+    } catch (err) {
+      fallos.push(etiqueta);
+    }
+  }
+  if (fallos.length) {
+    const msg = 'No se pudieron descargar ' + fallos.length + ' de ' + total + ' plano(s):\n\n' +
+                fallos.join('\n') +
+                '\n\n¿Continuar sin esos planos?\n(Aceptar = crear la OT sin ellos · Cancelar = abortar)';
+    if (!confirm(msg)) throw new Error('Creacion de OT cancelada por planos faltantes.');
+  }
+  return bytesOk;
+}
+
+// P3b: merge puro. Anexa las paginas de cada plano (ArrayBuffer) al final del PDF base.
+// Devuelve un Uint8Array con el PDF combinado.
+async function anexarPlanos(pdfBytes, planosBytes) {
+  const { PDFDocument } = PDFLib;
+  const base = await PDFDocument.load(pdfBytes);
+  for (const planoBytes of planosBytes) {
+    const src = await PDFDocument.load(planoBytes);
+    const paginas = await base.copyPages(src, src.getPageIndices());
+    paginas.forEach(pg => base.addPage(pg));
+  }
+  return await base.save();
+}
+
 async function generarOT() {
   const token = getToken();
   if (!token) { abrirReloginModal(); return; }
@@ -1200,6 +1272,7 @@ async function generarOT() {
 
   const btn = document.getElementById('btn-submit');
   btn.disabled = true; btn.textContent = 'Generando PDF...';
+  mostrarCargando('Generando PDF...');
 
   try {
     const folioPreview = simplificarProyecto(d.proyecto) + '-XXX-' + d.fecha;
@@ -1219,8 +1292,17 @@ async function generarOT() {
     });
     construirPDF(doc, d, folioPreview, 'APROBADA', checklistEtapa, [], firmasArr);
 
+    // Descargar planos del item una sola vez (se anexan a AMBOS PDFs)
+    const planos = Array.isArray(d.planos_del_item) ? d.planos_del_item : [];
+    const planosBytes = await prepararPlanos(planos, (i, n, etiqueta) => {
+      actualizarCargando('Anexando planos... (' + i + '/' + n + ') ' + etiqueta);
+    });
+
+    actualizarCargando('Subiendo a Drive...');
     btn.textContent = 'Enviando...';
-    const pdfB64 = doc.output('datauristring').split(',')[1];
+    const pdfB64 = planosBytes.length
+      ? bytesABase64(await anexarPlanos(new Uint8Array(doc.output('arraybuffer')), planosBytes))
+      : doc.output('datauristring').split(',')[1];
 
     const resp = await fetch(SCRIPT_URL, {
       method: 'POST', headers: { 'Content-Type': 'text/plain' },
@@ -1243,7 +1325,10 @@ async function generarOT() {
         creator: 'CAMI Sistema'
       });
       construirPDF(doc2, d, result.folio, 'APROBADA', checklistEtapa, [], firmasArr);
-      _ultimoPDF = { folio: result.folio, blob: doc2.output('blob'), doc: doc2, url: result.url };
+      const blobLocal = planosBytes.length
+        ? new Blob([await anexarPlanos(new Uint8Array(doc2.output('arraybuffer')), planosBytes)], { type: 'application/pdf' })
+        : doc2.output('blob');
+      _ultimoPDF = { folio: result.folio, blob: blobLocal, url: result.url };
       _firmaRecepcion = null;  // limpiar para no arrastrarla a la siguiente OT
       mostrarExitoModal(result.folio, result.url);
     } else if (/sesion/i.test(result.error || '')) {
@@ -1254,6 +1339,7 @@ async function generarOT() {
   } catch (err) {
     showToast('Error: ' + escapeHtml(err.message), 'err');
   } finally {
+    ocultarCargando();
     btn.disabled = false; btn.textContent = 'Crear OT';
   }
 }
@@ -1266,6 +1352,23 @@ function mostrarExitoModal(folio, driveUrl) {
   document.getElementById('exito-modal').classList.add('show');
 }
 function cerrarExitoModal() { document.getElementById('exito-modal').classList.remove('show'); }
+
+function mostrarCargando(msg) {
+  document.getElementById('cargando-mensaje').textContent = msg;
+  document.getElementById('cargando-modal').classList.add('show');
+}
+function actualizarCargando(msg) { document.getElementById('cargando-mensaje').textContent = msg; }
+function ocultarCargando() { document.getElementById('cargando-modal').classList.remove('show'); }
+
+// Convierte Uint8Array a base64 por chunks (evita desbordar la pila con PDFs grandes).
+function bytesABase64(bytes) {
+  let binario = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binario += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  }
+  return btoa(binario);
+}
 
 function puedeCompartirArchivo() {
   if (!navigator.canShare || !navigator.share) return false;
@@ -1289,7 +1392,11 @@ async function compartirPDF() {
 }
 function descargarPDF() {
   if (!_ultimoPDF) { showToast('No hay PDF para descargar.', 'err'); return; }
-  _ultimoPDF.doc.save(_ultimoPDF.folio + '.pdf');
+  const url = URL.createObjectURL(_ultimoPDF.blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = _ultimoPDF.folio + '.pdf';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
   cerrarExitoModal();
   limpiarFormulario();
 }
