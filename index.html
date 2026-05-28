@@ -294,6 +294,15 @@ textarea{resize:vertical;min-height:60px}
         </div>
       </div>
 
+      <div class="section">
+        <div class="section-title">Planos de fabricacion del item</div>
+        <div id="planos-item-content">
+          <p style="font-size:12px;color:#888780;text-align:center;padding:20px;margin:0">
+            Selecciona un item para ver sus planos.
+          </p>
+        </div>
+      </div>
+
       <div class="section" id="checklist-preview-section" style="display:none">
         <div class="section-title">Checklist de Calidad (referencia)</div>
         <div id="checklist-preview"></div>
@@ -460,6 +469,8 @@ let _etapaActual = null;    // objeto de la etapa seleccionada
 let _itemsCache = [];       // items del proyecto actual
 let _itemActual = null;     // item seleccionado del proyecto
 let _busquedaActual = '';   // string actual del filtro de items
+let _planosCache = [];      // todos los planos del proyecto actual
+let _planosDelItem = [];    // planos que contienen el mark del item seleccionado
 
 document.getElementById('fecha').value = new Date().toISOString().split('T')[0];
 
@@ -596,8 +607,74 @@ function onProyectoChange() {
   document.getElementById('item-busqueda').value = '';
   document.getElementById('item-resultados').style.display = 'none';
   document.getElementById('item-seleccionado').style.display = 'none';
-  if (nombre) cargarItemsProyecto(nombre);
-  else document.getElementById('item-status').textContent = 'Selecciona un proyecto primero.';
+  // Resetear planos
+  _planosCache = [];
+  _planosDelItem = [];
+  actualizarPlanosDelItem();
+  if (nombre) {
+    cargarItemsProyecto(nombre);
+    cargarPlanosProyecto(nombre);
+  } else {
+    document.getElementById('item-status').textContent = 'Selecciona un proyecto primero.';
+  }
+}
+
+async function cargarPlanosProyecto(proyecto) {
+  try {
+    const r = await fetch(SCRIPT_URL + '?accion=listaPlanosPorProyecto&proyecto=' + encodeURIComponent(proyecto));
+    const d = await r.json();
+    _planosCache = (d.ok && Array.isArray(d.planos)) ? d.planos : [];
+  } catch (e) {
+    _planosCache = [];
+  }
+  actualizarPlanosDelItem();
+}
+
+function actualizarPlanosDelItem() {
+  if (!_itemActual) {
+    _planosDelItem = [];
+  } else if (!_planosCache.length) {
+    _planosDelItem = [];
+  } else {
+    const mark = _itemActual.mark;
+    _planosDelItem = _planosCache.filter(p => Array.isArray(p.marks) && p.marks.indexOf(mark) !== -1);
+  }
+  renderizarPlanosItem();
+}
+
+function renderizarPlanosItem() {
+  const cont = document.getElementById('planos-item-content');
+  if (!_itemActual) {
+    cont.innerHTML = '<p style="font-size:12px;color:#888780;text-align:center;padding:20px;margin:0">Selecciona un item para ver sus planos.</p>';
+    return;
+  }
+  if (!_planosCache.length && !_planosDelItem.length) {
+    cont.innerHTML = '<p style="font-size:12px;color:#888780;text-align:center;padding:20px;margin:0">Sin catalogo de planos para este proyecto.</p>';
+    return;
+  }
+  const mark = _itemActual.mark;
+  if (!_planosDelItem.length) {
+    cont.innerHTML = '<p style="font-size:12px;color:#888780;text-align:center;padding:20px;margin:0">El item ' + escapeHtml(mark) + ' no esta referenciado en ningun plano.</p>';
+    return;
+  }
+  const subInfo = [_itemActual.tipo_nombre, _itemActual.descripcion].filter(s => s).join(' ');
+  const cabecera = '<div style="font-size:12px;color:#4A4A48;padding-bottom:8px;border-bottom:1px solid #d3d1c7;margin-bottom:4px">Item: <strong>' + escapeHtml(mark) + '</strong>' + (subInfo ? ' (' + escapeHtml(subInfo) + ')' : '') + '</div>';
+  const filas = _planosDelItem.map(p => {
+    const codigoTxt = escapeHtml(p.codigo || '');
+    const codigoCell = p.url_publica
+      ? '<a href="' + escapeAttr(p.url_publica) + '" target="_blank" style="font-weight:700;color:#1a1a18;text-decoration:none">' + codigoTxt + '</a>'
+      : '<span style="font-weight:700;color:#1a1a18">' + codigoTxt + '</span>';
+    const num = 'Plano ' + escapeHtml(p.numero_plano || '') + (p.revision ? ' Rev ' + escapeHtml(p.revision) : '');
+    return '<div style="display:flex;gap:12px;align-items:center;padding:8px 0;border-bottom:1px solid #f0eee8;font-size:12px">' +
+           '<span style="color:#3B6D11;font-size:14px;width:16px;flex-shrink:0">&#10003;</span>' +
+           '<span style="min-width:140px;flex-shrink:0">' + codigoCell + '</span>' +
+           '<span style="color:#4A4A48;min-width:130px;flex-shrink:0">' + num + '</span>' +
+           '<span style="color:#888780">' + escapeHtml(p.title || '') + '</span>' +
+           '</div>';
+  }).join('');
+  const n = _planosDelItem.length;
+  const total = '<div style="font-size:11px;color:#888780;margin-top:10px;text-align:right">Total: ' + n + ' plano' + (n === 1 ? '' : 's') + ' asociado' + (n === 1 ? '' : 's') + ' al item.</div>';
+  cont.innerHTML = cabecera + filas + total;
 }
 
 async function cargarItemsProyecto(proyecto) {
@@ -681,6 +758,7 @@ function seleccionarItem(idx) {
     'Item seleccionado: ' + item.mark + (subInfo ? ' (' + subInfo + ')' : '');
   seleccionadoDiv.style.display = 'flex';
   onItemSelected(item);
+  actualizarPlanosDelItem();
 }
 
 function onItemSelected(item) {
@@ -711,6 +789,7 @@ function deseleccionarItem() {
   document.getElementById('item-seleccionado').style.display = 'none';
   document.getElementById('item-busqueda').value = '';
   document.getElementById('item-resultados').style.display = 'none';
+  actualizarPlanosDelItem();
 }
 
 async function cargarEtapas() {
@@ -860,6 +939,13 @@ function recolectar() {
     direccion:    document.getElementById('direccion').value.trim(),
     modo:         _proyectoActual ? _proyectoActual.modo : '',
     item:         _itemActual || null,
+    planos_del_item: _planosDelItem.map(p => ({
+      codigo: p.codigo,
+      numero_plano: p.numero_plano,
+      title: p.title,
+      revision: p.revision,
+      url_publica: p.url_publica
+    })),
     responsable:  document.getElementById('responsable').value.trim(),
     ot_interna:   document.getElementById('ot-interna').value.trim(),
     entrega:      document.getElementById('entrega').value,
@@ -906,6 +992,8 @@ function aplicarDatos(d) {
     _itemActual = null;
     document.getElementById('item-seleccionado').style.display = 'none';
   }
+  _planosDelItem = Array.isArray(d.planos_del_item) ? d.planos_del_item : [];
+  renderizarPlanosItem();
   const tbody = document.getElementById('materiales-body');
   tbody.innerHTML = '';
   if (Array.isArray(d.materiales) && d.materiales.length) d.materiales.forEach(m => addMaterial(m));
