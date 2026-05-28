@@ -85,6 +85,7 @@ function doGet(e) {
     if (accion === 'listaEtapas')      return handleListaEtapas();
     if (accion === 'getLogo')          return handleGetLogo();
     if (accion === 'verificar')        return handleVerificar(e.parameter.folio || '');
+    if (accion === 'abrirPDF')         return handleAbrirPDF(e.parameter.folio || '');
     if (accion === 'firma')            return handleFirmaImg(e.parameter.id || '');
     if (accion === 'ping')             return jsonResp({ ok: true, version: MODULE_VERSION, module: 'cami-ot' });
     return jsonResp({ ok: false, error: 'Accion desconocida: ' + accion });
@@ -98,6 +99,7 @@ function doPost(e) {
     const raw  = (e.postData && e.postData.contents) ? e.postData.contents : '{}';
     const data = JSON.parse(raw);
     const accion = data.action || '';
+    if (accion === 'reservarFolio')        return handleReservarFolio(data);
     if (accion === 'crearOT')              return handleCrearOT(data);
     if (accion === 'listarOTs')            return handleListarOTs(data);
     if (accion === 'descargarOT')          return handleDescargarOT(data);
@@ -357,6 +359,108 @@ function handleVerificar(folio) {
   return htmlResp(html);
 }
 
+// ── ENDPOINT GET PUBLICO: ABRIR PDF (destino del QR de verificacion) ──
+// Busca el folio, y si tiene PDF redirige al visor de Drive. Publico (sin token).
+function handleAbrirPDF(folio) {
+  folio = String(folio || '').trim();
+  if (!folio) return htmlResp(paginaMensajeOT('Folio invalido', 'No se especifico un folio.'));
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const shOT = ss.getSheetByName(H_OT);
+  const rows = shOT.getDataRange().getValues();
+  let encontrado = false, url = '';
+  for (let i = 1; i < rows.length; i++) {
+    if (String(rows[i][0]) === folio) {
+      encontrado = true;
+      url = String(rows[i][16] || '').trim();  // Q pdf_url
+      break;
+    }
+  }
+  if (!encontrado) {
+    return htmlResp(paginaMensajeOT('OT no encontrada',
+      'El folio ' + escapeHtml(folio) + ' no existe en el sistema.'));
+  }
+  if (!url) {
+    return htmlResp(paginaMensajeOT('OT pendiente',
+      'El PDF de ' + escapeHtml(folio) + ' aun no esta disponible. Intenta de nuevo en unos minutos.'));
+  }
+  // Apps Script no permite 302 nativo: redirige el frame superior por JS + enlace manual.
+  const html =
+    '<!DOCTYPE html><html><head><meta charset="UTF-8">' +
+    '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+    '<title>Abriendo OT ' + escapeHtml(folio) + '</title></head>' +
+    '<body style="font-family:Arial,sans-serif;text-align:center;padding:40px;color:#1a1a18">' +
+    '<p>Abriendo PDF de la OT ' + escapeHtml(folio) + '...</p>' +
+    '<p><a href="' + escapeHtml(url) + '" target="_top">Toca aqui si no abre automaticamente</a></p>' +
+    '<script>window.top.location.href=' + JSON.stringify(url) + ';</script>' +
+    '</body></html>';
+  return htmlResp(html);
+}
+
+// Pagina HTML simple para mensajes de abrirPDF (se ve en el navegador al escanear el QR).
+function paginaMensajeOT(titulo, mensaje) {
+  return '<!DOCTYPE html><html><head><meta charset="UTF-8">' +
+    '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+    '<title>CAMI - ' + escapeHtml(titulo) + '</title>' +
+    '<style>body{font-family:Arial,sans-serif;background:#EFEFED;padding:40px;text-align:center;color:#1a1a18}' +
+    '.box{max-width:400px;margin:0 auto;background:#fff;border-radius:10px;padding:32px;border:1px solid #d3d1c7}' +
+    'h2{color:#8B6914;margin-bottom:12px}p{font-size:14px;color:#4A4A48}</style>' +
+    '</head><body><div class="box"><h2>' + escapeHtml(titulo) + '</h2>' +
+    '<p>' + mensaje + '</p></div></body></html>';
+}
+
+// ── ENDPOINT POST: RESERVAR FOLIO ──────────────────────────────
+// Genera el folio real y crea una fila "PENDIENTE" sin PDF. El frontend
+// construye el PDF con este folio (y su QR) y luego llama crearOT con data.folio.
+function handleReservarFolio(data) {
+  const auth = autenticarConApp(data.token, APP_KEY);
+  if (!auth.ok) return jsonResp(auth);
+
+  const fecha    = String(data.fecha || '').trim();
+  const proyecto = String(data.proyecto || '').trim();
+  const etapa    = String(data.etapa || '').trim();
+  if (!fecha)    return jsonResp({ ok: false, error: 'Fecha requerida' });
+  if (!proyecto) return jsonResp({ ok: false, error: 'Proyecto requerido' });
+  if (!etapa)    return jsonResp({ ok: false, error: 'Etapa requerida' });
+
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(15000)) {
+    return jsonResp({ ok: false, error: 'Sistema ocupado, intenta de nuevo' });
+  }
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const shOT = ss.getSheetByName(H_OT);
+    if (!shOT) return jsonResp({ ok: false, error: 'Hoja OT no encontrada' });
+    const folio = generarFolio(ss, proyecto, fecha, etapa);
+    shOT.appendRow([
+      folio,               // A folio
+      new Date(fecha),     // B fecha
+      proyecto,            // C proyecto
+      etapa,               // D etapa
+      '',                  // E responsable
+      '',                  // F ot_interna
+      '',                  // G entrega
+      '',                  // H tiempo
+      '',                  // I inspeccion
+      '',                  // J observaciones
+      'PENDIENTE',         // K estado (reservado, aun sin PDF)
+      auth.usuario.nombre, // L creado_por
+      '',                  // M aprobado_por
+      '',                  // N fecha_aprob
+      '',                  // O cerrado_por
+      '',                  // P fecha_cierre
+      '',                  // Q pdf_url (vacio = aun no subido)
+      new Date()           // R timestamp
+    ]);
+    appendLog(ss, folio, 'RESERVADA', auth.usuario.nombre, '');
+    return jsonResp({ ok: true, folio: folio });
+  } catch (err) {
+    return jsonResp({ ok: false, error: 'Error al reservar folio: ' + err.message });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 // ── ENDPOINT POST: CREAR OT ────────────────────────────────────
 
 function handleCrearOT(data) {
@@ -364,6 +468,7 @@ function handleCrearOT(data) {
   if (!auth.ok) return jsonResp(auth);
   const usuario = auth.usuario;
 
+  const folioReservado = String(data.folio || '').trim();
   const fecha       = String(data.fecha || '').trim();
   const proyecto    = String(data.proyecto || '').trim();
   const etapa       = String(data.etapa || '').trim();
@@ -388,36 +493,41 @@ function handleCrearOT(data) {
 
   try {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
-    const folio = generarFolio(ss, proyecto, fecha, etapa);
-
     const estadoInicial   = REQUIERE_APROBACION ? 'PENDIENTE_APROBACION' : 'APROBADA';
     const aprobadoPorAuto = REQUIERE_APROBACION ? '' : 'SISTEMA-AUTO';
     const fechaAprobAuto  = REQUIERE_APROBACION ? '' : new Date();
 
-    // 1. Cabecera en OT
     const shOT = ss.getSheetByName(H_OT);
     if (!shOT) return jsonResp({ ok: false, error: 'Hoja OT no encontrada' });
-    shOT.appendRow([
-      folio,                    // A folio
-      new Date(fecha),          // B fecha
-      proyecto,                 // C proyecto
-      etapa,                    // D etapa
-      responsable,              // E responsable
-      otInterna,                // F ot_interna (numero/referencia opcional)
-      entrega,                  // G entrega
-      tiempo,                   // H tiempo
-      inspeccion,               // I inspeccion (texto libre)
-      observaciones,            // J observaciones
-      estadoInicial,            // K estado
-      usuario.nombre,           // L creado_por
-      aprobadoPorAuto,          // M aprobado_por
-      fechaAprobAuto,           // N fecha_aprob
-      '',                       // O cerrado_por
-      '',                       // P fecha_cierre
-      '',                       // Q pdf_url
-      new Date()                // R timestamp
-    ]);
-    const filaOT = shOT.getLastRow();
+
+    // 1. Cabecera en OT
+    let folio, filaOT;
+    if (folioReservado) {
+      // Flujo nuevo: la fila ya existe (reservada). Actualizar, no insertar.
+      const ubicado = ubicarOT(shOT, folioReservado);
+      if (!ubicado.fila) return jsonResp({ ok: false, error: 'Folio no reservado' });
+      const urlExistente = String(shOT.getRange(ubicado.fila, 17).getValue() || '').trim();
+      if (urlExistente)  return jsonResp({ ok: false, error: 'Folio ya creado' });
+      folio  = folioReservado;
+      filaOT = ubicado.fila;
+      // B..J (fecha..observaciones) en un solo setValues
+      shOT.getRange(filaOT, 2, 1, 9).setValues([[
+        new Date(fecha), proyecto, etapa, responsable, otInterna, entrega, tiempo, inspeccion, observaciones
+      ]]);
+      shOT.getRange(filaOT, 11).setValue(estadoInicial);   // K estado
+      shOT.getRange(filaOT, 12).setValue(usuario.nombre);  // L creado_por
+      shOT.getRange(filaOT, 13).setValue(aprobadoPorAuto); // M aprobado_por
+      shOT.getRange(filaOT, 14).setValue(fechaAprobAuto);  // N fecha_aprob
+    } else {
+      // Flujo legacy (compatibilidad): genera folio e inserta la fila.
+      folio = generarFolio(ss, proyecto, fecha, etapa);
+      shOT.appendRow([
+        folio, new Date(fecha), proyecto, etapa, responsable, otInterna, entrega, tiempo,
+        inspeccion, observaciones, estadoInicial, usuario.nombre, aprobadoPorAuto, fechaAprobAuto,
+        '', '', '', new Date()
+      ]);
+      filaOT = shOT.getLastRow();
+    }
 
     // 2. Materiales
     if (materiales.length) {
