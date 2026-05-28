@@ -7,6 +7,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/signature_pad@4.1.7/dist/signature_pad.umd.min.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:#EFEFED;font-family:'Courier New',monospace;min-height:100vh;padding:1.5rem 1rem}
@@ -435,6 +436,28 @@ textarea{resize:vertical;min-height:60px}
   </div>
 </div>
 
+<!-- Modal: Firma de recepcion -->
+<div id="firma-recepcion-modal" class="modal-overlay">
+  <div class="modal-box">
+    <div class="modal-header">
+      <strong>FIRMA DE RECEPCION</strong>
+      <button onclick="cerrarFirmaRecepcionModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p>Responsable: <strong id="firma-recepcion-nombre">—</strong><br/>
+         Firma con el dedo para recibir la OT. La firma es obligatoria.</p>
+      <canvas id="firma-recepcion-canvas" class="firma-canvas"></canvas>
+      <div class="modal-actions">
+        <button class="btn-secondary" onclick="limpiarFirmaRecepcion()">Limpiar</button>
+        <button class="btn-success" onclick="confirmarFirmaYCrear()">Confirmar y generar OT</button>
+      </div>
+      <div class="modal-actions" style="margin-top:8px">
+        <button class="btn-secondary" onclick="cerrarFirmaRecepcionModal()">Cancelar</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
 if (window.pdfjsLib) {
   pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
@@ -471,6 +494,8 @@ let _itemActual = null;     // item seleccionado del proyecto
 let _busquedaActual = '';   // string actual del filtro de items
 let _planosCache = [];      // todos los planos del proyecto actual
 let _planosDelItem = [];    // planos que contienen el mark del item seleccionado
+let _signaturePad = null;   // instancia SignaturePad del modal de recepcion
+let _firmaRecepcion = null; // dataURL PNG de la firma de recepcion capturada
 
 document.getElementById('fecha').value = new Date().toISOString().split('T')[0];
 
@@ -953,7 +978,8 @@ function recolectar() {
     inspeccion:   document.getElementById('inspeccion').value.trim(),
     observaciones:document.getElementById('obs').value.trim(),
     materiales:   materiales,
-    entregables:  entregables
+    entregables:  entregables,
+    firma_recepcion: _firmaRecepcion || ''
   };
 }
 function aplicarDatos(d) {
@@ -994,6 +1020,7 @@ function aplicarDatos(d) {
   }
   _planosDelItem = Array.isArray(d.planos_del_item) ? d.planos_del_item : [];
   renderizarPlanosItem();
+  _firmaRecepcion = d.firma_recepcion || null;
   const tbody = document.getElementById('materiales-body');
   tbody.innerHTML = '';
   if (Array.isArray(d.materiales) && d.materiales.length) d.materiales.forEach(m => addMaterial(m));
@@ -1100,6 +1127,70 @@ async function enviarOT() {
   if (!d.proyecto)    return showToast('Selecciona un proyecto.', 'err');
   if (!d.etapa)       return showToast('Selecciona una etapa.', 'err');
   if (!d.responsable) return showToast('Responsable requerido.', 'err');
+  // Firma de recepcion obligatoria: capturarla antes de generar.
+  _firmaRecepcion = null;
+  abrirFirmaRecepcionModal();
+}
+
+// ── MODAL FIRMA DE RECEPCION (signature_pad) ──────────────────
+function abrirFirmaRecepcionModal() {
+  document.getElementById('firma-recepcion-nombre').textContent =
+    document.getElementById('responsable').value.trim() || '—';
+  document.getElementById('firma-recepcion-modal').classList.add('show');
+  setTimeout(initFirmaRecepcionPad, 60);  // esperar layout para dimensionar el canvas
+}
+
+function initFirmaRecepcionPad() {
+  const canvas = document.getElementById('firma-recepcion-canvas');
+  const ratio = Math.max(window.devicePixelRatio || 1, 1);
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * ratio;
+  canvas.height = rect.height * ratio;
+  canvas.getContext('2d').scale(ratio, ratio);
+  _signaturePad = new SignaturePad(canvas, {
+    backgroundColor: 'rgb(255,255,255)',
+    penColor: 'rgb(26,26,24)'
+  });
+}
+
+function _resizeFirmaRecepcion() {
+  if (!_signaturePad) return;
+  const modal = document.getElementById('firma-recepcion-modal');
+  if (!modal.classList.contains('show')) return;  // no redimensionar si esta oculto
+  const canvas = document.getElementById('firma-recepcion-canvas');
+  const data = _signaturePad.toData();
+  const ratio = Math.max(window.devicePixelRatio || 1, 1);
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * ratio;
+  canvas.height = rect.height * ratio;
+  canvas.getContext('2d').scale(ratio, ratio);
+  _signaturePad.clear();
+  _signaturePad.fromData(data);
+}
+window.addEventListener('resize', _resizeFirmaRecepcion);
+
+function limpiarFirmaRecepcion() {
+  if (_signaturePad) _signaturePad.clear();
+}
+
+function cerrarFirmaRecepcionModal() {
+  document.getElementById('firma-recepcion-modal').classList.remove('show');
+}
+
+async function confirmarFirmaYCrear() {
+  if (!_signaturePad || _signaturePad.isEmpty()) {
+    alert('Firma requerida. Firma para recibir la OT.');
+    return;
+  }
+  _firmaRecepcion = _signaturePad.toDataURL('image/png');
+  cerrarFirmaRecepcionModal();
+  await generarOT();
+}
+
+async function generarOT() {
+  const token = getToken();
+  if (!token) { abrirReloginModal(); return; }
+  const d = recolectar();
 
   const btn = document.getElementById('btn-submit');
   btn.disabled = true; btn.textContent = 'Generando PDF...';
@@ -1108,6 +1199,9 @@ async function enviarOT() {
     const folioPreview = simplificarProyecto(d.proyecto) + '-XXX-' + d.fecha;
     const { jsPDF } = window.jspdf;
     const checklistEtapa = await cargarChecklist(d.etapa);
+    const firmasArr = _firmaRecepcion
+      ? [{ tipo: 'RECEPCION', firmante: d.responsable, imageB64: _firmaRecepcion }]
+      : [];
 
     const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'letter' });
     const metadataJSON = JSON.stringify(d);
@@ -1117,7 +1211,7 @@ async function enviarOT() {
       keywords: 'CAMI OT ' + d.proyecto,
       creator: 'CAMI Sistema'
     });
-    construirPDF(doc, d, folioPreview, 'APROBADA', checklistEtapa, [], null);
+    construirPDF(doc, d, folioPreview, 'APROBADA', checklistEtapa, [], firmasArr);
 
     btn.textContent = 'Enviando...';
     const pdfB64 = doc.output('datauristring').split(',')[1];
@@ -1142,8 +1236,9 @@ async function enviarOT() {
         keywords: 'CAMI OT ' + d.proyecto,
         creator: 'CAMI Sistema'
       });
-      construirPDF(doc2, d, result.folio, 'APROBADA', checklistEtapa, [], null);
+      construirPDF(doc2, d, result.folio, 'APROBADA', checklistEtapa, [], firmasArr);
       _ultimoPDF = { folio: result.folio, blob: doc2.output('blob'), doc: doc2, url: result.url };
+      _firmaRecepcion = null;  // limpiar para no arrastrarla a la siguiente OT
       mostrarExitoModal(result.folio, result.url);
     } else if (/sesion/i.test(result.error || '')) {
       abrirReloginModal();
@@ -1923,7 +2018,11 @@ function drawGridFirmas(doc, x, y, cW, d, folio, firmasArr) {
   doc.text('(sello fisico)', cx[2] + colW / 2, y + boxH / 2 + 1, { align: 'center' });
 
   // ─── FILA 2 ───
+  const rec = (firmasArr && firmasArr.find) ? firmasArr.find(f => f.tipo === 'RECEPCION') : null;
   celda(0, row2, 'RECEPCION DEL RESPONSABLE');
+  if (rec && rec.imageB64) {
+    try { doc.addImage(rec.imageB64, 'PNG', cx[0] + 2, row2 + 2, colW - 4, boxH - 4, '', 'FAST'); } catch (e) {}
+  }
   textoAbajo(0, row2, d.responsable || '________________', 'Firma al recibir la OT');
 
   celda(1, row2, 'ENTREGA / TRABAJO TERMINADO');
