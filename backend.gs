@@ -66,6 +66,7 @@ const H_LOG         = 'OT_LOG';
 const H_PROYECTOS   = 'CAT_PROYECTOS';
 const H_CAT_CHECKL  = 'CAT_OT_CHECKLIST';
 const H_ITEMS       = 'CAT_ITEMS';
+const H_PLANOS      = 'CAT_PLANOS';
 
 const META_PREFIX       = 'CAMI_OT_DATA::';
 const VERIFICACION_PATH = '?accion=verificar&folio=';
@@ -79,6 +80,7 @@ function doGet(e) {
   try {
     if (accion === 'listaProyectos')   return handleListaProyectos();
     if (accion === 'listaItemsPorProyecto') return handleListaItemsPorProyecto(e.parameter.proyecto || '');
+    if (accion === 'listaPlanosPorProyecto') return handleListaPlanosPorProyecto(e.parameter.proyecto || '');
     if (accion === 'listaChecklist')   return handleListaChecklist(e.parameter.etapa || '');
     if (accion === 'listaEtapas')      return handleListaEtapas();
     if (accion === 'getLogo')          return handleGetLogo();
@@ -163,6 +165,35 @@ function handleListaItemsPorProyecto(proyecto) {
     });
   }
   return jsonResp({ ok: true, proyecto: proyecto, total: items.length, items: items });
+}
+
+function handleListaPlanosPorProyecto(proyecto) {
+  proyecto = String(proyecto || '').trim();
+  if (!proyecto) return jsonResp({ ok: false, error: 'Proyecto requerido' });
+
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(H_PLANOS);
+  if (!sh) return jsonResp({ ok: false, error: 'Hoja CAT_PLANOS no encontrada' });
+
+  const rows = sh.getDataRange().getValues();
+  const planos = [];
+  for (let i = 1; i < rows.length; i++) {
+    const codigo = String(rows[i][0] || '').trim();
+    if (!codigo) continue;
+    const proy = String(rows[i][1] || '').trim();
+    if (proy !== proyecto) continue;
+    const marksRaw = String(rows[i][5] || '').trim();
+    const marks = marksRaw ? marksRaw.split(';').map(m => m.trim()).filter(m => m) : [];
+    planos.push({
+      codigo:        codigo,
+      numero_plano:  String(rows[i][2] || '').trim(),
+      revision:      String(rows[i][3] || '').trim(),
+      title:         String(rows[i][4] || '').trim(),
+      marks:         marks,
+      url_publica:   String(rows[i][7] || '').trim(),
+      observaciones: String(rows[i][11] || '').trim()
+    });
+  }
+  return jsonResp({ ok: true, proyecto: proyecto, total: planos.length, planos: planos });
 }
 
 function handleListaEtapas() {
@@ -949,4 +980,7 @@ function testFolio() {
 }
 function testListaItemsHarrison() {
   Logger.log(handleListaItemsPorProyecto('HARRISON-OWOW').getContent());
+}
+function testListaPlanosHarrison() {
+  Logger.log(handleListaPlanosPorProyecto('HARRISON-OWOW').getContent());
 }
