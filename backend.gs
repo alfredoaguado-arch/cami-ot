@@ -65,7 +65,7 @@ const H_FIRMAS      = 'OT_FIRMAS';
 const H_LOG         = 'OT_LOG';
 const H_PROYECTOS   = 'CAT_PROYECTOS';
 const H_CAT_CHECKL  = 'CAT_OT_CHECKLIST';
-const H_ITEMS_PREFIX = 'CAT_ITEMS_';
+const H_ITEMS       = 'CAT_ITEMS';
 
 const META_PREFIX       = 'CAMI_OT_DATA::';
 const VERIFICACION_PATH = '?accion=verificar&folio=';
@@ -139,13 +139,14 @@ function handleListaItemsPorProyecto(proyecto) {
   proyecto = String(proyecto || '').trim();
   if (!proyecto) return jsonResp({ ok: false, error: 'Proyecto requerido' });
 
-  const nombreHoja = H_ITEMS_PREFIX + proyecto;
-  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(nombreHoja);
-  if (!sh) return jsonResp({ ok: false, error: 'No hay catalogo de items para proyecto ' + proyecto });
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(H_ITEMS);
+  if (!sh) return jsonResp({ ok: false, error: 'Hoja CAT_ITEMS no encontrada' });
 
   const rows = sh.getDataRange().getValues();
   const items = [];
   for (let i = 1; i < rows.length; i++) {
+    const proy = String(rows[i][0] || '').trim();
+    if (proy !== proyecto) continue;
     const activo = String(rows[i][9] || '').trim().toUpperCase();
     if (activo !== 'SI') continue;
     const mark = String(rows[i][1] || '').trim();
