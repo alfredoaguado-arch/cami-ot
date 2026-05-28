@@ -1271,11 +1271,25 @@ async function generarOT() {
   const d = recolectar();
 
   const btn = document.getElementById('btn-submit');
-  btn.disabled = true; btn.textContent = 'Generando PDF...';
-  mostrarCargando('Generando PDF...');
+  btn.disabled = true; btn.textContent = 'Reservando...';
+  mostrarCargando('Reservando folio...');
 
   try {
-    const folioPreview = simplificarProyecto(d.proyecto) + '-XXX-' + d.fecha;
+    // 1. Reservar folio real ANTES de construir el PDF (si falla, no trabajamos en vano).
+    const respFolio = await fetch(SCRIPT_URL, {
+      method: 'POST', headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({ action: 'reservarFolio', token, proyecto: d.proyecto, etapa: d.etapa, fecha: d.fecha })
+    });
+    const resFolio = await respFolio.json();
+    if (!resFolio.ok) {
+      if (/sesion/i.test(resFolio.error || '')) { abrirReloginModal(); return; }
+      showToast('Error al reservar folio: ' + escapeHtml(resFolio.error || 'desconocido'), 'err');
+      return;
+    }
+    const folioReal = resFolio.folio;
+
+    // 2. Construir UN solo PDF con el folio real (su QR ya apunta a abrirPDF&folio=real).
+    actualizarCargando('Generando PDF...');
     const { jsPDF } = window.jspdf;
     const checklistEtapa = await cargarChecklist(d.etapa);
     const firmasArr = _firmaRecepcion
@@ -1283,31 +1297,37 @@ async function generarOT() {
       : [];
 
     const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'letter' });
-    const metadataJSON = JSON.stringify(d);
     doc.setProperties({
-      title: 'OT - ' + d.proyecto,
-      subject: META_PREFIX + metadataJSON,
+      title: 'OT - ' + folioReal,
+      subject: META_PREFIX + JSON.stringify(d),
       keywords: 'CAMI OT ' + d.proyecto,
       creator: 'CAMI Sistema'
     });
-    construirPDF(doc, d, folioPreview, 'APROBADA', checklistEtapa, [], firmasArr);
+    construirPDF(doc, d, folioReal, 'APROBADA', checklistEtapa, [], firmasArr);
 
-    // Descargar planos del item una sola vez (se anexan a AMBOS PDFs)
+    // 3. Descargar y anexar planos del item (una sola vez).
     const planos = Array.isArray(d.planos_del_item) ? d.planos_del_item : [];
     const planosBytes = await prepararPlanos(planos, (i, n, etiqueta) => {
       actualizarCargando('Anexando planos... (' + i + '/' + n + ') ' + etiqueta);
     });
 
+    let pdfB64, blobLocal;
+    if (planosBytes.length) {
+      const merged = await anexarPlanos(new Uint8Array(doc.output('arraybuffer')), planosBytes);
+      pdfB64 = bytesABase64(merged);
+      blobLocal = new Blob([merged], { type: 'application/pdf' });
+    } else {
+      pdfB64 = doc.output('datauristring').split(',')[1];
+      blobLocal = doc.output('blob');
+    }
+
+    // 4. Subir el PDF al backend con el folio reservado (activa el flujo nuevo).
     actualizarCargando('Subiendo a Drive...');
     btn.textContent = 'Enviando...';
-    const pdfB64 = planosBytes.length
-      ? bytesABase64(await anexarPlanos(new Uint8Array(doc.output('arraybuffer')), planosBytes))
-      : doc.output('datauristring').split(',')[1];
-
     const resp = await fetch(SCRIPT_URL, {
       method: 'POST', headers: { 'Content-Type': 'text/plain' },
       body: JSON.stringify({
-        action: 'crearOT', token,
+        action: 'crearOT', token, folio: folioReal,
         fecha: d.fecha, proyecto: d.proyecto, etapa: d.etapa, responsable: d.responsable,
         ot_interna: d.ot_interna, entrega: d.entrega, tiempo: d.tiempo,
         inspeccion: d.inspeccion, observaciones: d.observaciones,
@@ -1316,18 +1336,6 @@ async function generarOT() {
     });
     const result = await resp.json();
     if (result.ok) {
-      // Generar PDF final con folio real
-      const doc2 = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'letter' });
-      doc2.setProperties({
-        title: 'OT - ' + result.folio,
-        subject: META_PREFIX + metadataJSON,
-        keywords: 'CAMI OT ' + d.proyecto,
-        creator: 'CAMI Sistema'
-      });
-      construirPDF(doc2, d, result.folio, 'APROBADA', checklistEtapa, [], firmasArr);
-      const blobLocal = planosBytes.length
-        ? new Blob([await anexarPlanos(new Uint8Array(doc2.output('arraybuffer')), planosBytes)], { type: 'application/pdf' })
-        : doc2.output('blob');
       _ultimoPDF = { folio: result.folio, blob: blobLocal, url: result.url };
       _firmaRecepcion = null;  // limpiar para no arrastrarla a la siguiente OT
       mostrarExitoModal(result.folio, result.url);
@@ -2150,7 +2158,7 @@ function drawGridFirmas(doc, x, y, cW, d, folio, firmasArr) {
   textoAbajo(1, row2, d.responsable || '________________', 'Firma al entregar trabajo finalizado');
 
   celda(2, row2, 'VERIFICACION DIGITAL');
-  qrEnCelda(2, row2, SCRIPT_URL + '?accion=verificar&folio=' + encodeURIComponent(folio));
+  qrEnCelda(2, row2, SCRIPT_URL + '?accion=abrirPDF&folio=' + encodeURIComponent(folio));
   textoAbajo(2, row2, '', 'Escanea para verificar');
 }
 
