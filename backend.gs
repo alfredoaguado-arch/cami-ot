@@ -1,5 +1,5 @@
 // ================================================================
-// CAMI - Apps Script ORDENES DE TRABAJO v2.7
+// CAMI - Apps Script ORDENES DE TRABAJO v2.8
 // Bound al Sheet de OT (CAMI_OT_DB) - ID 12WU13Qp2DPXjaqAMuXg-yYYizuKqMU1K04v0nw0Ud7o
 //
 // REDISENIO COMPLETO vs v1.3:
@@ -42,12 +42,13 @@
 //   - CAT_ITEMS               catalogo de marks (esquema compacto v2.7)
 //   - CAT_PLANOS              catalogo de planos por proyecto
 //   - CAT_COMPOSICION         (NUEVO v2.7) composicion SE -> componentes (qty)
+//   - OT_LOTE_MARKS           (NUEVO v2.8 Fase 1) marks del lote por OT, estado CREADO/CERRADO
 //
 // Folder Drive PDFs OT: 1WxxF5AfU6XTWT_SSisWqhTGzQdouadRL
 // Folder Drive Firmas:  (subcarpeta automatica dentro del folder de OT)
 // ================================================================
 
-const MODULE_VERSION = '2.7';
+const MODULE_VERSION = '2.8';
 
 const CENTRAL_URL  = 'https://script.google.com/macros/s/AKfycbw8Ucc9J3_TQcsAR0tn2Lk5DBN2bPWG6HF2pm3GfoEwa2NlRFQn5qZPVj7gy-IaLBSg/exec';
 const FOLDER_ID    = '1WxxF5AfU6XTWT_SSisWqhTGzQdouadRL';
@@ -71,6 +72,7 @@ const H_CAT_CHECKL  = 'CAT_OT_CHECKLIST';
 const H_ITEMS       = 'CAT_ITEMS';
 const H_PLANOS      = 'CAT_PLANOS';
 const H_COMPOSICION = 'CAT_COMPOSICION';
+const H_LOTE_MARKS  = 'OT_LOTE_MARKS';
 
 const META_PREFIX       = 'CAMI_OT_DATA::';
 const VERIFICACION_PATH = '?accion=verificar&folio=';
@@ -579,6 +581,30 @@ function handleCrearOT(data) {
       }
     }
 
+    // 2.5 Lote marks (v2.8 Fase 1: OT de habilitado por lote)
+    const loteMarks = Array.isArray(data.lote_marks) ? data.lote_marks : [];
+    if (loteMarks.length) {
+      const shLote = ss.getSheetByName(H_LOTE_MARKS);
+      if (shLote) {
+        const filasLote = loteMarks.map(function(lm, i) {
+          return [
+            folio + '-L' + (i + 1),                  // id_lote
+            folio,                                    // folio
+            proyecto,                                 // proyecto
+            String(lm.mark || '').trim(),             // mark
+            parseFloat(lm.qty) || 0,                  // qty
+            String(lm.plano || '').trim(),            // plano
+            'CREADO',                                 // estado_lote
+            '',                                       // cerrado_por
+            '',                                       // fecha_cierre
+            new Date()                                // timestamp_creacion
+          ];
+        });
+        shLote.getRange(shLote.getLastRow() + 1, 1, filasLote.length, 10).setValues(filasLote);
+      }
+      // Si la hoja no existe, no rompe: los lote_marks no se persisten (silencioso).
+    }
+
     // 3. Log
     appendLog(ss, folio, 'CREADA', usuario.nombre, '');
     if (!REQUIERE_APROBACION) {
@@ -843,6 +869,21 @@ function handleCerrarOT(data) {
         ? obsActual + '\n[Cierre]: ' + observaciones
         : '[Cierre]: ' + observaciones;
       shOT.getRange(ubicado.fila, 10).setValue(nuevoObs);
+    }
+
+    // 4. Cerrar marks del lote (v2.8 Fase 1)
+    const shLote = ss.getSheetByName(H_LOTE_MARKS);
+    if (shLote) {
+      const rowsLote = shLote.getDataRange().getValues();
+      const ahora = new Date();
+      for (let i = 1; i < rowsLote.length; i++) {
+        if (String(rowsLote[i][1] || '').trim() === folio &&
+            String(rowsLote[i][6] || '').trim().toUpperCase() === 'CREADO') {
+          shLote.getRange(i + 1, 7).setValue('CERRADO');             // col 7 estado_lote
+          shLote.getRange(i + 1, 8).setValue(auth.usuario.nombre);   // col 8 cerrado_por
+          shLote.getRange(i + 1, 9).setValue(ahora);                 // col 9 fecha_cierre
+        }
+      }
     }
 
     appendLog(ss, folio, 'COMPLETADA', auth.usuario.nombre, idFirma);

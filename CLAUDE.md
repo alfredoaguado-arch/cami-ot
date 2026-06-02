@@ -29,14 +29,31 @@ CAMI es una plataforma modular para operación interna (construcción / manufact
 
 `cami-ot` es el módulo de **órdenes de trabajo**. Es donde el supervisor o admin crea una OT formal asociada a un procedimiento sobre uno o varios items, captura los detalles, genera un PDF firmable y lo guarda en Drive.
 
-**Versión actual:** v2.0 (rediseño completo desplegado el 27-abr-2026).
+**Versión actual:** v2.8 (frontend Fase 1 + backend Apps Script v2.8).
 
-**Características clave de v2.0:**
+**Características clave de v2.0** (rediseño completo, 27-abr-2026):
 - Estados de workflow definidos (BORRADOR → EN PROCESO → CERRADA)
 - Firmas digitales en canvas (no PIN)
 - Checklist por etapa con catálogo configurable (`CAT_OT_CHECKLIST`)
 - Deliverables / entregables
 - PDF vertical con metadata embebida re-leíble
+
+**Añadido en v2.5–v2.6:**
+- **Planos del item anexados al PDF** (v2.5): al crear la OT, los planos asociados al mark del item se descargan desde Drive y se anexan al final del PDF con `pdf-lib` (merge en el frontend, con reintentos y validación de magic number `%PDF-`).
+- **Reservar folio primero** (v2.6): el frontend pide el folio real al backend (`reservarFolio`) ANTES de construir el PDF, así el PDF nace con el folio real. Elimina el bug del placeholder `-XXX-` que quedaba embebido en el PDF subido a Drive.
+- **QR de verificación → abre el PDF** (v2.6): el QR de "VERIFICACIÓN DIGITAL" apunta a `?accion=abrirPDF&folio=` (endpoint público que redirige al visor de Drive), en vez del antiguo `?accion=verificar` que devolvía JSON. El QR de cierre (`#cerrar/<folio>`) no cambió.
+- **PDFs públicos en Drive:** los PDFs de OT deben quedar accesibles como "Cualquiera con el enlace" para que el QR abra en taller sin sesión Google. Depende del sharing de la carpeta `FOLDER_ID` (y/o `setSharing` por archivo).
+
+**Añadido en v2.7–v2.8 (Fase 1 — OT de habilitado por lote, 1-jun-2026):**
+- **Catálogo CAT_ITEMS rediseñado a esquema compacto v2.7** (12 cols): `mark` = `mark_id_canonico` (clave estable tipo `MK-...`/`SE-...`), `label` = display humano (ej. `110A1`). Campos nuevos: `material`, `acabado`, `weight`, `es_subensamble` (SI/NO). Elimina `tipo_codigo`, `tipo_nombre`, `thickness`, `qty` del esquema.
+- **CAT_COMPOSICION (nueva hoja v2.7):** relación SE → componentes (mark) con `qty`. Fuente única de verdad para la qty total de un mark en el proyecto.
+- **Endpoint `listaComposicion`:** público (sin token), devuelve la composición filtrada por proyecto. El frontend la consume al cambiar proyecto y construye `_qtyTotalPorMark` (mapa `mark → Σ qty`).
+- **OT multi-pick (v2.8 Fase 1):** el formulario pasa de un item único a `items: [...]` (array de marks). UI con chips, dedup por `mark` canonical, display por `label`. En etapa `HABILITADO` el selector filtra solo marks de hoja (`es_subensamble === 'NO'`).
+- **BOM auto-sincronizado:** cada chip del lote inyecta una fila al BOM con `data-mark`, qty default = qty total derivada de COMPOSICION (editable). Quitar chip (o borrar fila auto con X) sincroniza ambos lados.
+- **Cambio de etapa con lote ya armado:** confirma y limpia chips + BOM auto.
+- **PDF con sección "MARKS DEL LOTE":** tabla `# | Mark | Descripción | Qty | Material` antes del BOM. Solo se renderiza si `d.items?.length > 0`.
+- **Hoja nueva OT_LOTE_MARKS (v2.8 backend):** persistencia estructurada de marks por OT (`id_lote, folio, proyecto, mark, qty, plano, estado_lote, cerrado_por, fecha_cierre, timestamp_creacion`). `handleCrearOT` escribe con `estado_lote='CREADO'`; `handleCerrarOT` actualiza a `CERRADO` con `cerrado_por`+`fecha_cierre`. La sábana de seguimiento futura consume esta hoja.
+- **Fase 2 (ENSAMBLE) pendiente post-6-jun:** mismo patrón inverso (etapa `ENSAMBLE` filtraría solo SE; BOM derivado vía COMPOSICION cargada).
 
 ## 3. Patrón de PDF (compartido con todo el ecosistema)
 
