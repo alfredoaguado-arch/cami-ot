@@ -1,5 +1,5 @@
 // ================================================================
-// CAMI - Apps Script ORDENES DE TRABAJO v2.4
+// CAMI - Apps Script ORDENES DE TRABAJO v2.7
 // Bound al Sheet de OT (CAMI_OT_DB) - ID 12WU13Qp2DPXjaqAMuXg-yYYizuKqMU1K04v0nw0Ud7o
 //
 // REDISENIO COMPLETO vs v1.3:
@@ -39,12 +39,15 @@
 //   - OT_LOG                  bitacora de cambios de estado
 //   - CAT_PROYECTOS           catalogo (mismo formato que requisicion)
 //   - CAT_OT_CHECKLIST        Etapa | Seccion | Item | Activo
+//   - CAT_ITEMS               catalogo de marks (esquema compacto v2.7)
+//   - CAT_PLANOS              catalogo de planos por proyecto
+//   - CAT_COMPOSICION         (NUEVO v2.7) composicion SE -> componentes (qty)
 //
 // Folder Drive PDFs OT: 1WxxF5AfU6XTWT_SSisWqhTGzQdouadRL
 // Folder Drive Firmas:  (subcarpeta automatica dentro del folder de OT)
 // ================================================================
 
-const MODULE_VERSION = '2.6';
+const MODULE_VERSION = '2.7';
 
 const CENTRAL_URL  = 'https://script.google.com/macros/s/AKfycbw8Ucc9J3_TQcsAR0tn2Lk5DBN2bPWG6HF2pm3GfoEwa2NlRFQn5qZPVj7gy-IaLBSg/exec';
 const FOLDER_ID    = '1WxxF5AfU6XTWT_SSisWqhTGzQdouadRL';
@@ -67,6 +70,7 @@ const H_PROYECTOS   = 'CAT_PROYECTOS';
 const H_CAT_CHECKL  = 'CAT_OT_CHECKLIST';
 const H_ITEMS       = 'CAT_ITEMS';
 const H_PLANOS      = 'CAT_PLANOS';
+const H_COMPOSICION = 'CAT_COMPOSICION';
 
 const META_PREFIX       = 'CAMI_OT_DATA::';
 const VERIFICACION_PATH = '?accion=verificar&folio=';
@@ -80,6 +84,7 @@ function doGet(e) {
   try {
     if (accion === 'listaProyectos')   return handleListaProyectos();
     if (accion === 'listaItemsPorProyecto') return handleListaItemsPorProyecto(e.parameter.proyecto || '');
+    if (accion === 'listaComposicion')      return handleListaComposicion(e.parameter.proyecto || '');
     if (accion === 'listaPlanosPorProyecto') return handleListaPlanosPorProyecto(e.parameter.proyecto || '');
     if (accion === 'listaChecklist')   return handleListaChecklist(e.parameter.etapa || '');
     if (accion === 'listaEtapas')      return handleListaEtapas();
@@ -151,22 +156,49 @@ function handleListaItemsPorProyecto(proyecto) {
   for (let i = 1; i < rows.length; i++) {
     const proy = String(rows[i][0] || '').trim();
     if (proy !== proyecto) continue;
-    const activo = String(rows[i][9] || '').trim().toUpperCase();
+    const activo = String(rows[i][9] || '').trim().toUpperCase();  // col 9
     if (activo !== 'SI') continue;
-    const mark = String(rows[i][1] || '').trim();
+    const mark = String(rows[i][1] || '').trim();                  // col 1 mark_id_canonico
     if (!mark) continue;
     items.push({
-      mark:        mark,
-      tipo_codigo: String(rows[i][2] || '').trim(),
-      tipo_nombre: String(rows[i][3] || '').trim(),
-      descripcion: String(rows[i][4] || '').trim(),
-      thickness:   String(rows[i][5] || '').trim(),
-      length:      String(rows[i][6] || '').trim(),
-      qty:         parseFloat(rows[i][7]) || 0,
-      num_plano:   String(rows[i][8] || '').trim()
+      mark:           mark,
+      label:          String(rows[i][2] || '').trim(),                 // col 2 label_visto
+      descripcion:    String(rows[i][3] || '').trim(),                 // col 3
+      length:         String(rows[i][4] || '').trim(),                 // col 4
+      weight:         String(rows[i][5] || '').trim(),                 // col 5
+      material:       String(rows[i][6] || '').trim(),                 // col 6
+      acabado:        String(rows[i][7] || '').trim(),                 // col 7
+      es_subensamble: String(rows[i][8] || '').trim().toUpperCase(),   // col 8 'SI'/'NO'
+      num_plano:      String(rows[i][10] || '').trim(),                // col 10 (string completo, puede traer varios)
+      origen:         String(rows[i][11] || '').trim()                 // col 11
     });
   }
   return jsonResp({ ok: true, proyecto: proyecto, total: items.length, items: items });
+}
+
+function handleListaComposicion(proyecto) {
+  proyecto = String(proyecto || '').trim();
+  if (!proyecto) return jsonResp({ ok: false, error: 'Proyecto requerido' });
+
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(H_COMPOSICION);
+  if (!sh) return jsonResp({ ok: false, error: 'Hoja CAT_COMPOSICION no encontrada' });
+
+  const rows = sh.getDataRange().getValues();
+  const composicion = [];
+  for (let i = 1; i < rows.length; i++) {
+    const proy = String(rows[i][0] || '').trim();                       // col 0 proyecto
+    if (proy !== proyecto) continue;
+    const componente = String(rows[i][2] || '').trim();                 // col 2 componente
+    if (!componente) continue;
+    composicion.push({
+      subensamble:            String(rows[i][1] || '').trim(),          // col 1
+      componente:             componente,
+      qty:                    parseFloat(rows[i][3]) || 0,              // col 3
+      descripcion_componente: String(rows[i][4] || '').trim(),          // col 4
+      label_componente:       String(rows[i][5] || '').trim()           // col 5
+    });
+  }
+  return jsonResp({ ok: true, proyecto: proyecto, total: composicion.length, composicion: composicion });
 }
 
 function handleListaPlanosPorProyecto(proyecto) {
@@ -1090,6 +1122,9 @@ function testFolio() {
 }
 function testListaItemsHarrison() {
   Logger.log(handleListaItemsPorProyecto('HARRISON-OWOW').getContent());
+}
+function testListaComposicionHarrison() {
+  Logger.log(handleListaComposicion('HARRISON-OWOW').getContent());
 }
 function testListaPlanosHarrison() {
   Logger.log(handleListaPlanosPorProyecto('HARRISON-OWOW').getContent());
