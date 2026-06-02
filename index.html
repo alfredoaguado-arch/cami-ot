@@ -700,13 +700,15 @@ async function cargarPlanosProyecto(proyecto) {
 
 // F3: recomputa planos del lote = union de planos que cubren AL MENOS un mark de _itemsActuales.
 // Array.filter sobre _planosCache da una vez por plano (no por mark), así que dedup natural.
+// CAT_PLANOS guarda labels (101EM1) en marks[], no mark_id canónicos (MK-054C3D93).
+// Cruce por label es lo correcto contra la convención del catalogo de planos.
 function actualizarPlanosDelLote() {
   if (!_itemsActuales.length || !_planosCache.length) {
     _planosDelLote = [];
   } else {
-    const marksDelLote = new Set(_itemsActuales.map(i => i.mark));
+    const labelsDelLote = new Set(_itemsActuales.map(i => i.label || i.mark));
     _planosDelLote = _planosCache.filter(p =>
-      Array.isArray(p.marks) && p.marks.some(m => marksDelLote.has(m))
+      Array.isArray(p.marks) && p.marks.some(m => labelsDelLote.has(m))
     );
   }
   renderizarPlanosLote();
@@ -766,6 +768,8 @@ async function cargarItemsProyecto(proyecto) {
       _itemsCache = d.items;
       status.textContent = d.total + ' items disponibles. Empieza a escribir para filtrar.';
       busqueda.disabled = false;
+      // Si el supervisor ya tipeó algo mientras cargaba, re-filtrar ahora que hay datos.
+      if (busqueda.value.trim()) filtrarItems();
     } else {
       _itemsCache = [];
       status.textContent = 'Sin catalogo de items para este proyecto.';
@@ -780,7 +784,7 @@ async function cargarItemsProyecto(proyecto) {
 }
 
 function filtrarItems() {
-  const q = document.getElementById('item-busqueda').value.trim().toUpperCase();
+  const q = document.getElementById('item-busqueda').value.trim();
   _busquedaActual = q;
   const cont = document.getElementById('item-resultados');
   if (!q || !_itemsCache.length) { cont.style.display = 'none'; return; }
@@ -789,14 +793,25 @@ function filtrarItems() {
   const etapa = (document.getElementById('etapa').value || '').toUpperCase();
   const soloHojas = etapa === 'HABILITADO';
 
+  // Case-sensitive intencional: en Tekla A1 (L6X6X3/8) y a1 (L6X3-1/2X1/2) son piezas distintas.
+  // El supervisor lee el label en el plano con su caso exacto y debe encontrarlo igual.
   const matches = _itemsCache.filter(it => {
     if (soloHojas && !esMarkDeHoja(it)) return false;
-    return (it.mark || '').toUpperCase().includes(q) ||
-           (it.label || '').toUpperCase().includes(q) ||
-           (it.descripcion || '').toUpperCase().includes(q) ||
-           (it.num_plano || '').toUpperCase().includes(q);
+    return (it.mark || '').includes(q) ||
+           (it.label || '').includes(q) ||
+           (it.descripcion || '').includes(q) ||
+           (it.num_plano || '').includes(q);
   });
-  matches.sort((a, b) => (a.label || a.mark || '').localeCompare(b.label || b.mark || ''));
+  // Ranking: exact en label primero, luego startsWith, luego contains (lex). El label es
+  // lo que el supervisor lee en el plano; el mark canonical es ruido para el orden.
+  matches.sort((a, b) => {
+    const la = a.label || '';
+    const lb = b.label || '';
+    const rankA = la === q ? 0 : (la.startsWith(q) ? 1 : 2);
+    const rankB = lb === q ? 0 : (lb.startsWith(q) ? 1 : 2);
+    if (rankA !== rankB) return rankA - rankB;
+    return la.localeCompare(lb);
+  });
 
   if (!matches.length) {
     cont.innerHTML = '<div style="padding:10px;color:#888780;font-size:12px;text-align:center">Sin resultados.</div>';
