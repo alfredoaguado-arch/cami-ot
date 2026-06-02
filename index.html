@@ -1439,7 +1439,7 @@ async function generarOT() {
     construirPDF(doc, d, folioReal, 'APROBADA', checklistEtapa, [], firmasArr);
 
     // 3. Descargar y anexar planos del item (una sola vez).
-    const planos = Array.isArray(d.planos_del_item) ? d.planos_del_item : [];
+    const planos = Array.isArray(d.planos_del_lote) ? d.planos_del_lote : [];
     const planosBytes = await prepararPlanos(planos, (i, n, etiqueta) => {
       actualizarCargando('Anexando planos... (' + i + '/' + n + ') ' + etiqueta);
     });
