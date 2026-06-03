@@ -87,6 +87,7 @@ function doGet(e) {
     if (accion === 'listaProyectos')   return handleListaProyectos();
     if (accion === 'listaItemsPorProyecto') return handleListaItemsPorProyecto(e.parameter.proyecto || '');
     if (accion === 'listaComposicion')      return handleListaComposicion(e.parameter.proyecto || '');
+    if (accion === 'listaLoteMarks')        return handleListaLoteMarks(e.parameter.proyecto || '');
     if (accion === 'listaPlanosPorProyecto') return handleListaPlanosPorProyecto(e.parameter.proyecto || '');
     if (accion === 'listaChecklist')   return handleListaChecklist(e.parameter.etapa || '');
     if (accion === 'listaEtapas')      return handleListaEtapas();
@@ -201,6 +202,56 @@ function handleListaComposicion(proyecto) {
     });
   }
   return jsonResp({ ok: true, proyecto: proyecto, total: composicion.length, composicion: composicion });
+}
+
+// ── listaLoteMarks (v2.9 — consumido por cami-procesos) ────────────
+// GET publico (sin token). Devuelve los marks de OT_LOTE_MARKS del proyecto,
+// con la ETAPA y el estado de la OT unidos por folio desde la cabecera OT.
+// La sabana de seguimiento (cami-procesos) LEE el cierre de OT desde aqui:
+// estado_lote='CERRADO' + etapa => la pieza ya ejecuto esa etapa (pend. de QC).
+function handleListaLoteMarks(proyecto) {
+  proyecto = String(proyecto || '').trim();
+  if (!proyecto) return jsonResp({ ok: false, error: 'Proyecto requerido' });
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const shLote = ss.getSheetByName(H_LOTE_MARKS);
+  if (!shLote) return jsonResp({ ok: true, proyecto: proyecto, total: 0, marks: [] });
+
+  // Mapa folio -> {etapa, estado_ot} desde la cabecera OT (col 4 etapa, col 11 estado)
+  const etapaPorFolio = {};
+  const estadoPorFolio = {};
+  const shOT = ss.getSheetByName(H_OT);
+  if (shOT) {
+    const ot = shOT.getDataRange().getValues();
+    for (let i = 1; i < ot.length; i++) {
+      const folio = String(ot[i][0] || '').trim();
+      if (!folio) continue;
+      etapaPorFolio[folio]  = String(ot[i][3]  || '').trim();   // col 4 etapa
+      estadoPorFolio[folio] = String(ot[i][10] || '').trim();   // col 11 estado
+    }
+  }
+
+  const rows = shLote.getDataRange().getValues();
+  const marks = [];
+  for (let i = 1; i < rows.length; i++) {
+    const proy = String(rows[i][2] || '').trim();               // col 3 proyecto
+    if (proy !== proyecto) continue;
+    const folio = String(rows[i][1] || '').trim();              // col 2 folio
+    const fc = rows[i][8];                                       // col 9 fecha_cierre
+    marks.push({
+      id_lote:      String(rows[i][0] || '').trim(),            // col 1
+      folio:        folio,
+      mark:         String(rows[i][3] || '').trim(),            // col 4 mark (canonical)
+      qty:          parseFloat(rows[i][4]) || 0,                // col 5
+      plano:        String(rows[i][5] || '').trim(),            // col 6
+      estado_lote:  String(rows[i][6] || '').trim().toUpperCase(), // col 7 CREADO/CERRADO
+      cerrado_por:  String(rows[i][7] || '').trim(),            // col 8
+      fecha_cierre: fc ? (fc instanceof Date ? fc.toISOString() : String(fc)) : '',
+      etapa:        etapaPorFolio[folio]  || '',
+      estado_ot:    estadoPorFolio[folio] || ''
+    });
+  }
+  return jsonResp({ ok: true, proyecto: proyecto, total: marks.length, marks: marks });
 }
 
 function handleListaPlanosPorProyecto(proyecto) {
