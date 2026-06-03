@@ -196,7 +196,7 @@ textarea{resize:vertical;min-height:60px}
           </div>
           <div>
             <label class="fl">Supervisor</label>
-            <input type="text" id="supervisor" placeholder="Se autocompleta al elegir proyecto"/>
+            <input type="text" id="supervisor" placeholder="Nombre del supervisor"/>
           </div>
         </div>
         <div style="margin-top:14px">
@@ -589,7 +589,6 @@ async function init() {
 
   if (tieneApp(APP_KEY)) {
     await Promise.all([cargarProyectos(), cargarEtapas(), cargarLogo()]);
-    document.getElementById('responsable').value = session.nombre;
     addMaterial();
   } else {
     if (tieneApp(APP_KEY_APROBAR)) changeTab('aprobar');
@@ -637,7 +636,6 @@ function onProyectoChange() {
   const p = _proyectosCache.find(x => x.proyecto === nombre);
   _proyectoActual = p || null;
   document.getElementById('cliente').value    = p ? p.cliente    : '';
-  document.getElementById('supervisor').value = p ? p.supervisor : '';
   document.getElementById('direccion').value  = p ? p.direccion  : '';
   // Resetear estado de items y recargar catalogo del nuevo proyecto
   _itemsCache = [];
