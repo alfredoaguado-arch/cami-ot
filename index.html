@@ -505,6 +505,7 @@ let _busquedaActual = '';   // string actual del filtro de items
 let _planosCache = [];      // todos los planos del proyecto actual
 let _planosDelLote = [];    // F3: union dedup de planos que cubren al menos un mark del lote
 let _qtyTotalPorMark = {};  // F4: mark canonical -> qty total derivada de COMPOSICION
+let _hijosPorSE = {};       // F5: label de SE -> [{componente_id, qty, label_componente, desc_componente}, ...]
 let _composicionPromise = null;   // F4: promise de la carga de composicion del proyecto actual
 let _composicionProyecto = null;  // F4: race-guard, proyecto al que pertenece _composicionPromise
 let _signaturePad = null;   // instancia SignaturePad del modal de recepcion
@@ -651,6 +652,7 @@ function onProyectoChange() {
   actualizarPlanosDelLote();
   // F4: resetear composicion del proyecto anterior
   _qtyTotalPorMark = {};
+  _hijosPorSE = {};
   _composicionPromise = null;
   _composicionProyecto = null;
   if (nombre) {
@@ -663,6 +665,8 @@ function onProyectoChange() {
 }
 
 // F4: carga COMPOSICION del proyecto, agrega qty por componente en _qtyTotalPorMark.
+// F5: además, indexa los hijos por label de sub-ensamble en _hijosPorSE para que al
+//      seleccionar un SE en ENSAMBLE el BOM se expanda con todas sus piezas.
 // Devuelve promise para que agregarItem la pueda esperar antes de derivar qty.
 // Race-guard: si el proyecto cambia mientras carga, descarta el resultado tardío.
 async function cargarComposicionProyecto(proyecto) {
@@ -673,15 +677,27 @@ async function cargarComposicionProyecto(proyecto) {
       const d = await r.json();
       if (_composicionProyecto !== proyecto) return;  // cambió de proyecto en el ínterin
       _qtyTotalPorMark = {};
+      _hijosPorSE = {};
       if (d.ok && Array.isArray(d.composicion)) {
         d.composicion.forEach(c => {
           if (!c.componente) return;
           _qtyTotalPorMark[c.componente] = (_qtyTotalPorMark[c.componente] || 0) + (c.qty || 0);
+          // listaComposicion entrega subensamble como "label (plano)"; extraemos el label.
+          const seLabel = (c.subensamble || '').split(' (')[0].trim();
+          if (!seLabel) return;
+          if (!_hijosPorSE[seLabel]) _hijosPorSE[seLabel] = [];
+          _hijosPorSE[seLabel].push({
+            componente_id:   c.componente,
+            qty:             c.qty || 1,
+            label_componente: c.label_componente || '',
+            desc_componente: c.descripcion_componente || '',
+          });
         });
       }
     } catch (e) {
       if (_composicionProyecto !== proyecto) return;
       _qtyTotalPorMark = {};
+      _hijosPorSE = {};
     }
   })();
   return _composicionPromise;
@@ -853,6 +869,8 @@ function filtrarItems() {
 
 // F2: agrega un item al lote multi-pick. Dedup por mark canónico (no por label).
 // F4: async + await composición para que la qty derivada sea correcta (no caiga a 1 por timing).
+// F5: dispatch BOM: si el item es sub-ensamble (es_subensamble==='SI'), el BOM se expande
+//      con sus componentes (1 fila por hijo); si es hoja, 1 sola fila como antes.
 async function agregarItem(idx) {
   const item = _itemsCache[idx];
   if (!item) return;
@@ -866,7 +884,11 @@ async function agregarItem(idx) {
   document.getElementById('item-busqueda').value = '';
   _busquedaActual = '';
   renderizarChips();
-  bomAgregarFilaParaMark(item);
+  if (String(item.es_subensamble || '').toUpperCase() === 'SI') {
+    bomAgregarFilasParaSubensamble(item);
+  } else {
+    bomAgregarFilaParaMark(item);
+  }
   actualizarPlanosDelLote();
 }
 
@@ -897,16 +919,11 @@ function renderizarChips() {
   cont.style.display = 'flex';
 }
 
-// F4: agrega/recicla fila del BOM para un mark del lote.
-// Descripcion = label · descripcion · material  (campos del esquema v2.7).
-// Qty default = _qtyTotalPorMark[mark] (derivada de COMPOSICION); editable.
-function bomAgregarFilaParaMark(item) {
-  const partes = [item.label || item.mark, item.descripcion, item.material]
-    .map(p => String(p || '').trim()).filter(p => p);
-  const descConcat = partes.join(' · ');
-  const qty = _qtyTotalPorMark[item.mark] || 1;
+// F4: anexa una fila al BOM reciclando la primera fila vacía sin data-mark si existe.
+// dataMark se persiste en tr.dataset.mark para que bomQuitarFilaPorMark borre las filas
+// vinculadas a un chip (un SE expandido marca todas sus filas con el data-mark del SE).
+function bomAnexarFila(descripcion, qty, dataMark) {
   const tbody = document.getElementById('materiales-body');
-  // Reciclar primera fila completamente vacía SIN data-mark.
   let filaVacia = null;
   tbody.querySelectorAll('tr').forEach(tr => {
     if (filaVacia) return;
@@ -917,14 +934,45 @@ function bomAgregarFilaParaMark(item) {
     }
   });
   if (filaVacia) {
-    filaVacia.dataset.mark = item.mark;
+    filaVacia.dataset.mark = dataMark;
     const inputs = filaVacia.querySelectorAll('input');
-    inputs[0].value = descConcat;
+    inputs[0].value = descripcion;
     inputs[1].value = qty;
     inputs[2].value = 'pz';
   } else {
-    addMaterial({ descripcion: descConcat, cantidad: qty, unidad: 'pz' }, item.mark);
+    addMaterial({ descripcion: descripcion, cantidad: qty, unidad: 'pz' }, dataMark);
   }
+}
+
+// F4: agrega 1 fila del BOM para un mark hoja del lote.
+// Descripcion = label · descripcion · material (campos del esquema v2.7).
+// Qty default = _qtyTotalPorMark[mark] (derivada de COMPOSICION); editable.
+function bomAgregarFilaParaMark(item) {
+  const partes = [item.label || item.mark, item.descripcion, item.material]
+    .map(p => String(p || '').trim()).filter(p => p);
+  bomAnexarFila(partes.join(' · '), _qtyTotalPorMark[item.mark] || 1, item.mark);
+}
+
+// F5: expande un sub-ensamble en sus piezas y agrega 1 fila por componente del BOM.
+// Todas las filas se marcan con data-mark=SE.mark para que quitar el chip elimine el bloque entero.
+// Fallback: si la composicion del proyecto no conoce el SE (proyecto sin CAT_COMPOSICION o SE huerfano),
+//           se cae al comportamiento de hoja para no romper el flujo.
+function bomAgregarFilasParaSubensamble(seItem) {
+  const hijos = _hijosPorSE[seItem.label] || [];
+  if (!hijos.length) {
+    bomAgregarFilaParaMark(seItem);
+    return;
+  }
+  const itemPorMark = {};
+  _itemsCache.forEach(it => { itemPorMark[it.mark] = it; });
+  hijos.forEach(h => {
+    const child = itemPorMark[h.componente_id] || {};
+    const label = child.label || h.label_componente || h.componente_id;
+    const desc  = child.descripcion || h.desc_componente || '';
+    const mat   = child.material || '';
+    const partes = [label, desc, mat].map(p => String(p || '').trim()).filter(p => p);
+    bomAnexarFila(partes.join(' · '), h.qty, seItem.mark);
+  });
 }
 
 // F4: quita la fila del BOM cuyo data-mark === mark dado.
