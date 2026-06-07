@@ -700,15 +700,23 @@ async function cargarPlanosProyecto(proyecto) {
 
 // F3: recomputa planos del lote = union de planos que cubren AL MENOS un mark de _itemsActuales.
 // Array.filter sobre _planosCache da una vez por plano (no por mark), así que dedup natural.
-// CAT_PLANOS guarda labels (101EM1) en marks[], no mark_id canónicos (MK-054C3D93).
-// Cruce por label es lo correcto contra la convención del catalogo de planos.
+// CAT_PLANOS.marks[] convive en dos formatos según la corrida que cargó cada proyecto:
+//   - labels visibles (p193, 101EM1): convención previa al refresh de HARRISON 4-jun.
+//   - ids canónicos (MK-/SE-): convención de la recarga de HARRISON 4-jun.
+//   - mixto: BASE-FRAMES-2 tiene SE- canónicos para cabezas y labels visibles para hijos.
+// Para tolerar las 3 convenciones simultáneamente cruzamos por LABEL Y MARK CANÓNICO
+// del item; un plano matchea si su marks[] contiene cualquiera de las dos llaves.
 function actualizarPlanosDelLote() {
   if (!_itemsActuales.length || !_planosCache.length) {
     _planosDelLote = [];
   } else {
-    const labelsDelLote = new Set(_itemsActuales.map(i => i.label || i.mark));
+    const keysDelLote = new Set();
+    _itemsActuales.forEach(i => {
+      if (i.label) keysDelLote.add(i.label);
+      if (i.mark)  keysDelLote.add(i.mark);
+    });
     _planosDelLote = _planosCache.filter(p =>
-      Array.isArray(p.marks) && p.marks.some(m => labelsDelLote.has(m))
+      Array.isArray(p.marks) && p.marks.some(m => keysDelLote.has(m))
     );
   }
   renderizarPlanosLote();
