@@ -778,6 +778,9 @@ function renderizarPlanosLote() {
 function esMarkDeHoja(item) {
   return String(item && item.es_subensamble || '').toUpperCase() === 'NO';
 }
+function esSubensamble(item) {
+  return String(item && item.es_subensamble || '').toUpperCase() === 'SI';
+}
 
 async function cargarItemsProyecto(proyecto) {
   const status = document.getElementById('item-status');
@@ -813,14 +816,19 @@ function filtrarItems() {
   const cont = document.getElementById('item-resultados');
   if (!q || !_itemsCache.length) { cont.style.display = 'none'; return; }
 
-  // F2: en HABILITADO el selector solo ofrece marks de hoja (MK).
+  // F2/F6: el selector filtra por tipo de mark segun la etapa.
+  //   HABILITADO -> solo hojas (es_subensamble='NO'), porque se fabrican piezas atomicas.
+  //   ENSAMBLE   -> solo sub-ensambles (es_subensamble='SI'), porque se arman ensembles.
+  //   resto      -> sin filtro (compatibilidad con etapas existentes).
   const etapa = (document.getElementById('etapa').value || '').toUpperCase();
   const soloHojas = etapa === 'HABILITADO';
+  const soloSubs  = etapa === 'ENSAMBLE';
 
   // Case-sensitive intencional: en Tekla A1 (L6X6X3/8) y a1 (L6X3-1/2X1/2) son piezas distintas.
   // El supervisor lee el label en el plano con su caso exacto y debe encontrarlo igual.
   const matches = _itemsCache.filter(it => {
     if (soloHojas && !esMarkDeHoja(it)) return false;
+    if (soloSubs  && !esSubensamble(it)) return false;
     return (it.mark || '').includes(q) ||
            (it.label || '').includes(q) ||
            (it.descripcion || '').includes(q) ||
