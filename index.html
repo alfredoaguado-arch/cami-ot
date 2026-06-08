@@ -492,6 +492,7 @@ let _cerrarCache = [];
 let _checklistsPorEtapa = {};
 let _otEnAprobacion = null;
 let _otEnCierre = null;
+let _cerrandoOT = false;   // guard de reentrada para evitar doble cierre por doble-clic
 let _ultimoPDF = null;
 let _currentTab = 'crear';
 let _firmaCanvas = null;   // referencia al canvas activo (modal aprobar/cerrar)
@@ -1887,7 +1888,7 @@ async function abrirCerrarModal(idx) {
 
     <div class="modal-actions" style="margin-top:18px">
       <button class="btn-secondary" onclick="cerrarCerrarModal()" style="flex:1;padding:10px">Cancelar</button>
-      <button class="btn-success" onclick="confirmarCierre()" style="flex:1;padding:10px">Marcar como Completada</button>
+      <button id="btn-confirmar-cierre" class="btn-success" onclick="confirmarCierre()" style="flex:1;padding:10px">Marcar como Completada</button>
     </div>
   `;
   setTimeout(() => initFirmaCanvas('firma-cerrar-canvas'), 50);
@@ -1898,6 +1899,10 @@ function cerrarCerrarModal() {
 }
 
 async function confirmarCierre() {
+  // Guard de reentrada: si el operador hace doble-clic mientras el POST esta en vuelo,
+  // el segundo clic se ignora silenciosamente. Defensa del cliente; backend tambien es
+  // idempotente via LockService + validacion de estado, pero esto evita el toast feo.
+  if (_cerrandoOT) return;
   if (!_otEnCierre) return;
   if (firmaEstaVacia('firma-cerrar-canvas')) { showToast('Firma del supervisor requerida.', 'err'); return; }
   const token = getToken(); if (!token) { abrirReloginModal(); return; }
@@ -1919,6 +1924,17 @@ async function confirmarCierre() {
   });
   const observaciones = document.getElementById('cerrar-obs').value.trim();
 
+  // Bloquear el boton y mostrar estado de carga ANTES del await.
+  const btn = document.getElementById('btn-confirmar-cierre');
+  const textoOriginal = btn ? btn.textContent : '';
+  _cerrandoOT = true;
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Cerrando OT...';
+    btn.style.opacity = '0.7';
+    btn.style.cursor = 'wait';
+  }
+
   try {
     const r = await fetch(SCRIPT_URL, {
       method: 'POST', headers: { 'Content-Type': 'text/plain' },
@@ -1937,6 +1953,17 @@ async function confirmarCierre() {
     cargarPorCerrar();
   } catch (e) {
     showToast('Error: ' + escapeHtml(e.message), 'err');
+  } finally {
+    // Re-habilitar el boton SIEMPRE. Si el modal se cerro (caso OK o sesion expirada)
+    // el boton es huerfano hasta la proxima apertura del modal, no afecta UX. Si hubo
+    // error visible (red, otro), el operador puede reintentar.
+    _cerrandoOT = false;
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = textoOriginal || 'Marcar como Completada';
+      btn.style.opacity = '';
+      btn.style.cursor = '';
+    }
   }
 }
 
