@@ -87,6 +87,8 @@ Como todos los módulos del ecosistema, este módulo:
 
 **App key requerida:** `ot`
 
+**⚠️ Scope `script.external_request` (Apps Script):** el paso 3 usa `UrlFetchApp.fetch` (en `validarTokenCentral`) para validar el token contra el central. Eso EXIGE el scope `https://www.googleapis.com/auth/script.external_request` autorizado en el proyecto Apps Script, junto con `.../auth/spreadsheets` (declarar AMBOS en `oauthScopes`, nivel RAÍZ del manifiesto, NO dentro de `"webapp"`). Si falta: el gate rechaza POSTs sin token pero NO puede VALIDAR tokens reales — toda escritura responde "Sesión inválida o expirada" aunque la sesión sea válida (las lecturas siguen funcionando, lo cual despista). `appsscript.json` no se versiona en el repo (vive sólo en el editor). cami-ot ya lo tiene autorizado por eso opera; un módulo nuevo que copie este gate lo necesita explícito. Incidente real: cami-procesos, 09-jun-2026 (revocar acceso en `myaccount.google.com/permissions` y re-ejecutar fuerza el consentimiento si el popup no aparece).
+
 ## 5. Vínculo con otros módulos
 
 **Con `cami-procesos` (futuro):**
