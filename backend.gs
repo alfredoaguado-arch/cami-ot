@@ -1,5 +1,5 @@
 // ================================================================
-// CAMI - Apps Script ORDENES DE TRABAJO v2.9
+// CAMI - Apps Script ORDENES DE TRABAJO v2.10.3
 // Bound al Sheet de OT (CAMI_OT_DB) - ID 12WU13Qp2DPXjaqAMuXg-yYYizuKqMU1K04v0nw0Ud7o
 //
 // REDISENIO COMPLETO vs v1.3:
@@ -44,14 +44,14 @@
 //   - CAT_COMPOSICION         (NUEVO v2.7) composicion SE -> componentes (qty)
 //   - OT_LOTE_MARKS           (NUEVO v2.8 Fase 1) marks del lote por OT, estado CREADO/CERRADO
 //
-// Folder Drive PDFs OT: 1WxxF5AfU6XTWT_SSisWqhTGzQdouadRL
+// Folder Drive PDFs OT: 1izB-ldGeOlpX_TPn5BOgkSQ0osb4j9Nw  (publico ANYONE_WITH_LINK desde v2.10)
 // Folder Drive Firmas:  (subcarpeta automatica dentro del folder de OT)
 // ================================================================
 
-const MODULE_VERSION = '2.9';
+const MODULE_VERSION = '2.10.3';
 
 const CENTRAL_URL  = 'https://script.google.com/macros/s/AKfycbw8Ucc9J3_TQcsAR0tn2Lk5DBN2bPWG6HF2pm3GfoEwa2NlRFQn5qZPVj7gy-IaLBSg/exec';
-const FOLDER_ID    = '1WxxF5AfU6XTWT_SSisWqhTGzQdouadRL';
+const FOLDER_ID    = '1izB-ldGeOlpX_TPn5BOgkSQ0osb4j9Nw';
 const LOGO_FILE_ID = '1J9yDatRxKTG_5AAPOpZblUMa-OPeJ5qP';
 
 const APP_KEY         = 'ot';
@@ -469,16 +469,35 @@ function handleAbrirPDF(folio) {
     return htmlResp(paginaMensajeOT('OT pendiente',
       'El PDF de ' + escapeHtml(folio) + ' aun no esta disponible. Intenta de nuevo en unos minutos.'));
   }
-  // Apps Script no permite 302 nativo: redirige el frame superior por JS + enlace manual.
+  // v2.10.3: Apps Script web apps se sirven dentro de un iframe sandbox. iOS Safari
+  // bloquea target="_top" desde el iframe (incluso con user-click; confirmado en
+  // Safari Privado tambien). Solucion universal: target="_blank" abre el PDF en una
+  // pestana nueva top-level del browser, completamente fuera del sandbox del iframe.
+  // Funciona en iOS Safari, Android, Chrome desktop, Safari desktop.
+  // URL bare /view (sin ?usp=) es la unica forma confirmada que abre sin login.
+  const m = url.match(/\/file\/d\/([^\/\?]+)/);
+  if (m) url = 'https://drive.google.com/file/d/' + m[1] + '/view';
+  const u = escapeHtml(url);
+  const f = escapeHtml(folio);
   const html =
     '<!DOCTYPE html><html><head><meta charset="UTF-8">' +
     '<meta name="viewport" content="width=device-width,initial-scale=1">' +
-    '<title>Abriendo OT ' + escapeHtml(folio) + '</title></head>' +
-    '<body style="font-family:Arial,sans-serif;text-align:center;padding:40px;color:#1a1a18">' +
-    '<p>Abriendo PDF de la OT ' + escapeHtml(folio) + '...</p>' +
-    '<p><a href="' + escapeHtml(url) + '" target="_top">Toca aqui si no abre automaticamente</a></p>' +
-    '<script>window.top.location.href=' + JSON.stringify(url) + ';</script>' +
-    '</body></html>';
+    '<title>OT ' + f + '</title>' +
+    '<style>' +
+    'body{font-family:-apple-system,BlinkMacSystemFont,Arial,sans-serif;margin:0;padding:32px 20px;background:#EFEFED;color:#1a1a18;text-align:center}' +
+    '.card{max-width:380px;margin:24px auto 0;background:#fff;border-radius:14px;padding:32px 24px;border:1px solid #d3d1c7}' +
+    '.label{font-size:11px;color:#888780;letter-spacing:.10em;text-transform:uppercase;margin:0 0 6px}' +
+    '.folio{font-size:18px;font-weight:700;color:#1a1a18;font-family:"SF Mono",Consolas,monospace;margin-bottom:28px;letter-spacing:.02em;word-break:break-all}' +
+    '.btn{display:block;background:#2A5A8C;color:#fff;text-decoration:none;font-weight:700;padding:16px 24px;border-radius:10px;font-size:16px;text-align:center}' +
+    '.btn:active{background:#1f4068}' +
+    '.hint{font-size:12px;color:#888780;margin-top:18px;line-height:1.5}' +
+    '</style></head>' +
+    '<body><div class="card">' +
+    '<div class="label">Orden de trabajo</div>' +
+    '<div class="folio">' + f + '</div>' +
+    '<a class="btn" href="' + u + '" target="_blank" rel="noopener noreferrer">Abrir PDF</a>' +
+    '<div class="hint">Toca el boton para abrir la OT en una pestana nueva.</div>' +
+    '</div></body></html>';
   return htmlResp(html);
 }
 
@@ -671,6 +690,9 @@ function handleCrearOT(data) {
         folio + '.pdf'
       );
       const file = DriveApp.getFolderById(FOLDER_ID).createFile(blob);
+      // v2.10: defense-in-depth. No depender de la herencia de sharing de la carpeta.
+      // El QR del PDF apunta a abrirPDF -> redirige a getUrl(), que requiere acceso publico.
+      file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
       const meta = {
         folio: folio,
         fecha: fecha,
@@ -687,7 +709,10 @@ function handleCrearOT(data) {
         timestamp: new Date().toISOString()
       };
       file.setDescription(META_PREFIX + JSON.stringify(meta));
-      pdfUrl = file.getUrl();
+      // v2.10.2: URL bare /view (sin ?usp=) es la unica forma confirmada que Drive abre
+      // para visitantes sin login. file.getUrl() retorna ?usp=drivesdk que Drive trata como
+      // peticion del SDK y rechaza el acceso publico.
+      pdfUrl = 'https://drive.google.com/file/d/' + file.getId() + '/view';
       shOT.getRange(filaOT, 17).setValue(pdfUrl);
     }
 
