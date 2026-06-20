@@ -1635,13 +1635,21 @@ async function generarOT() {
   btn.disabled = true; btn.textContent = 'Reservando...';
   mostrarCargando('Reservando folio...');
 
+  // v2.13 instrumentacion: medir cada fase para identificar el cuello de botella
+  // de la generacion en iPad. Logs a consola con prefijo [OT-METRICS].
+  _qrAcumuladoMs = 0;
+  const _metrics = {};
+  const _tStart = performance.now();
+
   try {
     // 1. Reservar folio real ANTES de construir el PDF (si falla, no trabajamos en vano).
+    const _tReservar0 = performance.now();
     const respFolio = await fetch(SCRIPT_URL, {
       method: 'POST', headers: { 'Content-Type': 'text/plain' },
       body: JSON.stringify({ action: 'reservarFolio', token, proyecto: d.proyecto, etapa: d.etapa, fecha: d.fecha })
     });
     const resFolio = await respFolio.json();
+    _metrics.reservar_folio_ms = Math.round(performance.now() - _tReservar0);
     if (!resFolio.ok) {
       if (/sesion/i.test(resFolio.error || '')) { abrirReloginModal(); return; }
       showToast('Error al reservar folio: ' + escapeHtml(resFolio.error || 'desconocido'), 'err');
@@ -1650,7 +1658,7 @@ async function generarOT() {
     const folioReal = resFolio.folio;
 
     // 2. Construir UN solo PDF con el folio real (su QR ya apunta a abrirPDF&folio=real).
-    actualizarCargando('Generando PDF...');
+    actualizarCargando('Generando OT...');
     const { jsPDF } = window.jspdf;
     const checklistEtapa = await cargarChecklist(d.etapa);
     const firmasArr = _firmaRecepcion
@@ -1664,20 +1672,31 @@ async function generarOT() {
       keywords: 'CAMI OT ' + d.proyecto,
       creator: 'CAMI Sistema'
     });
-    construirPDF(doc, d, folioReal, 'APROBADA', checklistEtapa, [], firmasArr);
+    const _tConstruir0 = performance.now();
+    construirPDF(doc, d, folioReal, 'PENDIENTE_APROBACION', checklistEtapa, [], firmasArr);
+    _metrics.construir_pdf_total_ms = Math.round(performance.now() - _tConstruir0);
+    _metrics.construir_pdf_qrs_ms   = Math.round(_qrAcumuladoMs);
+    _metrics.construir_pdf_render_puro_ms = _metrics.construir_pdf_total_ms - _metrics.construir_pdf_qrs_ms;
 
     // 3. Descargar y anexar planos del item (una sola vez).
     const planos = Array.isArray(d.planos_del_lote) ? d.planos_del_lote : [];
+    const _tDescarga0 = performance.now();
     const planosBytes = await prepararPlanos(planos, (i, n, etiqueta) => {
       actualizarCargando('Anexando planos... (' + i + '/' + n + ') ' + etiqueta);
     });
+    _metrics.descarga_planos_ms = Math.round(performance.now() - _tDescarga0);
+    _metrics.planos_count = planos.length;
 
     let pdfB64, blobLocal;
     if (planosBytes.length) {
+      actualizarCargando('Combinando PDF...');
+      const _tMerge0 = performance.now();
       const merged = await anexarPlanos(new Uint8Array(doc.output('arraybuffer')), planosBytes);
+      _metrics.merge_pdf_lib_ms = Math.round(performance.now() - _tMerge0);
       pdfB64 = bytesABase64(merged);
       blobLocal = new Blob([merged], { type: 'application/pdf' });
     } else {
+      _metrics.merge_pdf_lib_ms = 0;
       pdfB64 = doc.output('datauristring').split(',')[1];
       blobLocal = doc.output('blob');
     }
@@ -1685,6 +1704,7 @@ async function generarOT() {
     // 4. Subir el PDF al backend con el folio reservado (activa el flujo nuevo).
     actualizarCargando('Subiendo a Drive...');
     btn.textContent = 'Enviando...';
+    const _tUpload0 = performance.now();
     const resp = await fetch(SCRIPT_URL, {
       method: 'POST', headers: { 'Content-Type': 'text/plain' },
       body: JSON.stringify({
@@ -1697,6 +1717,9 @@ async function generarOT() {
       })
     });
     const result = await resp.json();
+    _metrics.upload_backend_ms = Math.round(performance.now() - _tUpload0);
+    _metrics.total_ms = Math.round(performance.now() - _tStart);
+    console.log('[OT-METRICS]', JSON.stringify(_metrics));
     if (result.ok) {
       _ultimoPDF = { folio: result.folio, blob: blobLocal, url: result.url };
       _firmaRecepcion = null;  // limpiar para no arrastrarla a la siguiente OT
@@ -2230,9 +2253,9 @@ function construirPDF(doc, d, folio, estado, checklistSecciones, checklistRespue
     y += tituloLines.length * 5.5 + 3;
   }
 
-  // ── Estado badge
-  drawEstadoBadge(doc, pL, y - 4, estado);
-  y += 10;
+  // v2.13: badge de estado removido del PDF impreso. El estado "verdadero"
+  // se consulta en tiempo real via QR de VERIFICACION DIGITAL -> handleVerificar.
+  // La funcion drawEstadoBadge se conserva definida abajo por si se reusa.
 
   // ── Datos: 2 filas de 3 columnas (en vertical no caben 6 columnas)
   doc.setTextColor(74, 74, 72); doc.setFont('helvetica', 'bold'); doc.setFontSize(8);
@@ -2603,7 +2626,12 @@ function drawGridFirmas(doc, x, y, cW, d, folio, firmasArr) {
   textoAbajo(2, row2, '', 'Escanea para verificar');
 }
 
+// v2.13 instrumentacion: acumulador para distinguir tiempo de QRs vs render
+// puro dentro de construirPDF. Reseteado al inicio de cada generarOT().
+let _qrAcumuladoMs = 0;
+
 function generarQR(text) {
+  const _qrT0 = performance.now();
   const tempDiv = document.createElement('div');
   tempDiv.style.position = 'absolute'; tempDiv.style.left = '-9999px';
   document.body.appendChild(tempDiv);
@@ -2615,11 +2643,15 @@ function generarQR(text) {
       cloned.width = canvas.width; cloned.height = canvas.height;
       cloned.getContext('2d').drawImage(canvas, 0, 0);
       document.body.removeChild(tempDiv);
+      _qrAcumuladoMs += performance.now() - _qrT0;
       return cloned;
     }
-    document.body.removeChild(tempDiv); return null;
+    document.body.removeChild(tempDiv);
+    _qrAcumuladoMs += performance.now() - _qrT0;
+    return null;
   } catch (e) {
     if (tempDiv.parentNode) document.body.removeChild(tempDiv);
+    _qrAcumuladoMs += performance.now() - _qrT0;
     throw e;
   }
 }

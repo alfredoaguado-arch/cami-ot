@@ -1,5 +1,5 @@
 // ================================================================
-// CAMI - Apps Script ORDENES DE TRABAJO v2.12
+// CAMI - Apps Script ORDENES DE TRABAJO v2.13
 // Bound al Sheet de OT (CAMI_OT_DB) - ID 12WU13Qp2DPXjaqAMuXg-yYYizuKqMU1K04v0nw0Ud7o
 //
 // REDISENIO COMPLETO vs v1.3:
@@ -48,7 +48,7 @@
 // Folder Drive Firmas:  (subcarpeta automatica dentro del folder de OT)
 // ================================================================
 
-const MODULE_VERSION = '2.12';
+const MODULE_VERSION = '2.13';
 
 const CENTRAL_URL  = 'https://script.google.com/macros/s/AKfycbw8Ucc9J3_TQcsAR0tn2Lk5DBN2bPWG6HF2pm3GfoEwa2NlRFQn5qZPVj7gy-IaLBSg/exec';
 const FOLDER_ID    = '1izB-ldGeOlpX_TPn5BOgkSQ0osb4j9Nw';
@@ -62,9 +62,13 @@ const APP_KEY         = 'ot';
 const APP_KEY_APROBAR = 'ot-aprobar';
 const APP_KEY_CERRAR  = 'ot-cerrar';
 
-// Si false, las OTs nuevas pasan directo a APROBADA al crearse (saltan PENDIENTE_APROBACION).
-// Las OTs viejas que quedaron en PENDIENTE_APROBACION siguen siendo procesables por handleAprobarOT/handleRechazarOT.
-const REQUIERE_APROBACION = false;
+// v2.13: reactivado. Las OT nuevas caen en PENDIENTE_APROBACION; alguien con
+// app-key ot-aprobar las firma desde el campo (segundos) antes de poder cerrarse.
+// Permite crear OTs en oficina/casa (paso lento ~3 min por jsPDF+pdf-lib en iPad)
+// y dejar solo la aprobacion para el campo. Si se vuelve a false, las OT nuevas
+// pasan directo a APROBADA al crearse (saltan PENDIENTE_APROBACION); las que
+// quedaron en PENDIENTE_APROBACION siguen siendo procesables.
+const REQUIERE_APROBACION = true;
 
 const H_OT          = 'OT';
 const H_MATERIALES  = 'OT_MATERIALES';
