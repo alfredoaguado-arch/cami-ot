@@ -283,7 +283,10 @@ function handleListaPlanosPorProyecto(proyecto) {
       marks:         marks,
       url_publica:   String(rows[i][7] || '').trim(),
       observaciones: String(rows[i][11] || '').trim(),
-      drive_id:      String(rows[i][12] || '').trim()   // col M (nuevo). Si no esta, frontend cae a url_publica.
+      // CAT_PLANOS hoy tiene: M = prioridad (anadida antes que drive_id). drive_id se
+      // ubica en col N (idx 13), primera columna libre despues de prioridad. Si la celda
+      // esta vacia el frontend cae a url_publica como fallback.
+      drive_id:      String(rows[i][13] || '').trim()   // col N (nuevo).
     });
   }
   return jsonResp({ ok: true, proyecto: proyecto, total: planos.length, planos: planos });
