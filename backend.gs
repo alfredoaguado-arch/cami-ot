@@ -1,5 +1,5 @@
 // ================================================================
-// CAMI - Apps Script ORDENES DE TRABAJO v2.11
+// CAMI - Apps Script ORDENES DE TRABAJO v2.12
 // Bound al Sheet de OT (CAMI_OT_DB) - ID 12WU13Qp2DPXjaqAMuXg-yYYizuKqMU1K04v0nw0Ud7o
 //
 // REDISENIO COMPLETO vs v1.3:
@@ -48,7 +48,7 @@
 // Folder Drive Firmas:  (subcarpeta automatica dentro del folder de OT)
 // ================================================================
 
-const MODULE_VERSION = '2.11';
+const MODULE_VERSION = '2.12';
 
 const CENTRAL_URL  = 'https://script.google.com/macros/s/AKfycbw8Ucc9J3_TQcsAR0tn2Lk5DBN2bPWG6HF2pm3GfoEwa2NlRFQn5qZPVj7gy-IaLBSg/exec';
 const FOLDER_ID    = '1izB-ldGeOlpX_TPn5BOgkSQ0osb4j9Nw';
@@ -375,6 +375,29 @@ function handleFirmaImg(idFirma) {
   } catch (err) {
     return jsonResp({ ok: false, error: err.message });
   }
+}
+
+// v2.12: verifica que el file tenga a FOLDER_ID (raiz OT) en su cadena de ancestros
+// (max 4 niveles: file -> etapa -> proyecto -> raiz, +1 buffer). Usado por
+// handleDescargarOT desde que los PDFs viven en FOLDER_ID/<proyecto>/<etapa>/.
+function _esDescendienteDeOT(file) {
+  let level = 0;
+  const queue = [];
+  const it = file.getParents();
+  while (it.hasNext()) queue.push(it.next());
+  while (queue.length && level < 4) {
+    const next = [];
+    for (let i = 0; i < queue.length; i++) {
+      const p = queue[i];
+      if (p.getId() === FOLDER_ID) return true;
+      const sub = p.getParents();
+      while (sub.hasNext()) next.push(sub.next());
+    }
+    queue.length = 0;
+    Array.prototype.push.apply(queue, next);
+    level++;
+  }
+  return false;
 }
 
 // Verifica que el file tenga a PLANOS_FOLDER_ID en su cadena de ancestros (max 6 niveles).
@@ -739,7 +762,10 @@ function handleCrearOT(data) {
         'application/pdf',
         folio + '.pdf'
       );
-      const file = DriveApp.getFolderById(FOLDER_ID).createFile(blob);
+      // v2.12: el PDF se crea en FOLDER_ID/<proyecto>/<etapa>/ (arbol por proyecto+etapa).
+      // OTs viejas en raiz siguen funcionando: handleListarOTs itera ambos niveles y
+      // handleDescargarOT autoriza ancestros transitivos.
+      const file = obtenerCarpetaProyectoEtapa(proyecto, etapa).createFile(blob);
       // v2.10: defense-in-depth. No depender de la herencia de sharing de la carpeta.
       // El QR del PDF apunta a abrirPDF -> redirige a getUrl(), que requiere acceso publico.
       file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
@@ -783,20 +809,36 @@ function handleListarOTs(data) {
 
   try {
     const folder = DriveApp.getFolderById(FOLDER_ID);
-    const it = folder.getFilesByType(MimeType.PDF);
     const archivos = [];
-    while (it.hasNext()) {
-      const f = it.next();
-      archivos.push({
-        id:    f.getId(),
-        name:  f.getName(),
-        fecha: f.getDateCreated().toISOString()
-      });
+    // Nivel 0: PDFs directos en raiz (OTs viejas, compatibilidad pre-v2.12).
+    _recolectarPDFsDeCarpeta(folder, archivos);
+    // Nivel 1+2 (v2.12): FOLDER_ID/<proyecto>/<etapa>/*.pdf
+    const itProy = folder.getFolders();
+    while (itProy.hasNext()) {
+      const proy = itProy.next();
+      if (proy.getName() === FIRMAS_SUBFOLDER) continue;  // skip subcarpeta de firmas
+      _recolectarPDFsDeCarpeta(proy, archivos);           // PDFs sueltos al nivel proyecto
+      const itEt = proy.getFolders();
+      while (itEt.hasNext()) {
+        _recolectarPDFsDeCarpeta(itEt.next(), archivos);
+      }
     }
     archivos.sort(function(a, b) { return b.fecha.localeCompare(a.fecha); });
     return jsonResp({ ok: true, archivos: archivos });
   } catch (err) {
     return jsonResp({ ok: false, error: 'Error listando Drive: ' + err.message });
+  }
+}
+
+function _recolectarPDFsDeCarpeta(folder, archivos) {
+  const it = folder.getFilesByType(MimeType.PDF);
+  while (it.hasNext()) {
+    const f = it.next();
+    archivos.push({
+      id:    f.getId(),
+      name:  f.getName(),
+      fecha: f.getDateCreated().toISOString()
+    });
   }
 }
 
@@ -809,12 +851,9 @@ function handleDescargarOT(data) {
 
   try {
     const file = DriveApp.getFileById(fileId);
-    const parents = file.getParents();
-    let autorizada = false;
-    while (parents.hasNext()) {
-      if (parents.next().getId() === FOLDER_ID) { autorizada = true; break; }
-    }
-    if (!autorizada) return jsonResp({ ok: false, error: 'Archivo no autorizado' });
+    // v2.12: con arbol <proyecto>/<etapa>/ el padre directo ya no es FOLDER_ID.
+    // Verificacion de ancestros transitiva (max 4 niveles).
+    if (!_esDescendienteDeOT(file)) return jsonResp({ ok: false, error: 'Archivo no autorizado' });
 
     const blob = file.getBlob();
     const b64 = Utilities.base64Encode(blob.getBytes());
@@ -1150,6 +1189,25 @@ function obtenerFolderFirmas() {
   const subs = padre.getFoldersByName(FIRMAS_SUBFOLDER);
   if (subs.hasNext()) return subs.next();
   return padre.createFolder(FIRMAS_SUBFOLDER);
+}
+
+// v2.12: busca o crea una subcarpeta con `nombre` dentro de `padre`. Si existe
+// la primera coincidencia gana (no duplica). Si Drive devuelve mas de una con
+// el mismo nombre por race history, se elige la primera. Helper idempotente.
+function _obtenerOCrearSubcarpeta(padre, nombre) {
+  const subs = padre.getFoldersByName(nombre);
+  if (subs.hasNext()) return subs.next();
+  return padre.createFolder(nombre);
+}
+
+// v2.12: resuelve FOLDER_ID/<proyecto>/<etapa>/ creando lo que falte. Etapa
+// tal cual (sin renombrar). Fallback 'General' si proyecto o etapa vienen
+// vacios (defensivo; en flujo normal ambos son validados antes en handleCrearOT).
+function obtenerCarpetaProyectoEtapa(proyecto, etapa) {
+  const proy = String(proyecto || '').trim() || 'General';
+  const et   = String(etapa    || '').trim() || 'General';
+  const raiz = DriveApp.getFolderById(FOLDER_ID);
+  return _obtenerOCrearSubcarpeta(_obtenerOCrearSubcarpeta(raiz, proy), et);
 }
 
 // ── HELPER: AUTENTICACION CON APP KEY ──────────────────────────
