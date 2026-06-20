@@ -577,6 +577,14 @@ document.getElementById('relogin-pin').addEventListener('keydown', function(e) {
 async function init() {
   const session = getSession();
   if (!session) {
+    // ARREGLO 1A: si el QR escaneado dejo hash #cerrar/, preservarlo a traves
+    // del viaje a login. Safari + login + vuelta comparten localStorage del
+    // mismo origen y cami-app2 NO lo toca (audit cero hits a localStorage).
+    try {
+      if ((location.hash || '').match(/^#cerrar\//)) {
+        localStorage.setItem('cami_pending_hash', location.hash);
+      }
+    } catch (e) {}
     showToast('No hay sesion activa. Redirigiendo al login...', 'err');
     setTimeout(() => window.location.href = LOGIN_URL, 1500);
     return;
@@ -584,10 +592,33 @@ async function init() {
   const apps = session.apps || [];
   const tieneAlguna = apps.indexOf(APP_KEY) !== -1 || apps.indexOf(APP_KEY_APROBAR) !== -1 || apps.indexOf(APP_KEY_CERRAR) !== -1;
   if (apps.length && !tieneAlguna) {
+    // Sin permiso: descartar hash pendiente para no insistir tras login fallido.
+    try { localStorage.removeItem('cami_pending_hash'); } catch (e) {}
     showToast('No tienes permiso para usar este modulo.', 'err');
     setTimeout(() => window.location.href = LOGIN_URL, 2000);
     return;
   }
+  // ARREGLO 1B: restaurar hash pendiente del viaje a login (si existe y no
+  // hay hash actual). replaceState NO dispara hashchange.
+  try {
+    const pendiente = localStorage.getItem('cami_pending_hash');
+    if (pendiente) {
+      localStorage.removeItem('cami_pending_hash');
+      if (!location.hash) {
+        history.replaceState(null, '', location.pathname + location.search + pendiente);
+      }
+    }
+  } catch (e) {}
+
+  // ARREGLO 2: overlay con mensaje contextual. Reutiliza #cargando-modal +
+  // helpers existentes (mostrarCargando/ocultarCargando).
+  const matchHashInit = (location.hash || '').match(/^#cerrar\/(.+)$/);
+  if (matchHashInit) {
+    mostrarCargando('Abriendo OT ' + decodeURIComponent(matchHashInit[1]) + '...');
+  } else {
+    mostrarCargando('Cargando modulo...');
+  }
+
   _userInfo = session;
   document.getElementById('user-name').textContent = session.nombre + ' (' + (session.rol || 'Usuario') + ')';
   configurarTabs();
@@ -602,7 +633,9 @@ async function init() {
   }
   if (tieneApp(APP_KEY_APROBAR)) cargarPorAprobar();
   if (tieneApp(APP_KEY_CERRAR))  await cargarPorCerrar();
-  await rutearHash();
+  // skipReload: cargarPorCerrar ya corrio arriba; evita la doble llamada.
+  await rutearHash({ skipReload: true });
+  ocultarCargando();
 }
 
 // ── ROUTING DE HASH (2026-06-20) ──────────────────────────────
@@ -633,7 +666,8 @@ function tieneCambiosSinGuardarEnCrear() {
   return false;
 }
 
-async function rutearHash() {
+async function rutearHash(opts) {
+  opts = opts || {};
   const m = (location.hash || '').match(/^#cerrar\/(.+)$/);
   if (!m) return;
   const folio = decodeURIComponent(m[1]);
@@ -652,15 +686,24 @@ async function rutearHash() {
     );
     if (!ok) return;
   }
-  changeTab('cerrar');
-  await cargarPorCerrar();
-  const idx = _cerrarCache.findIndex(function(o) { return o.folio === folio; });
-  if (idx === -1) {
-    showToast('OT <b>' + escapeHtml(folio) + '</b> no esta esperando cierre ' +
-              '(ya cerrada, no te toca, o no existe).', 'err');
-    return;
+  // Cuando viene del listener hashchange (PWA ya abierta), mostramos overlay
+  // propio para no quedar "colgado" durante el refresh. Cuando viene de init
+  // (skipReload=true), el overlay del init ya esta visible.
+  const overlayPropio = !opts.skipReload;
+  if (overlayPropio) mostrarCargando('Abriendo OT ' + folio + '...');
+  try {
+    changeTab('cerrar');
+    if (!opts.skipReload) await cargarPorCerrar();
+    const idx = _cerrarCache.findIndex(function(o) { return o.folio === folio; });
+    if (idx === -1) {
+      showToast('OT <b>' + escapeHtml(folio) + '</b> no esta esperando cierre ' +
+                '(ya cerrada, no te toca, o no existe).', 'err');
+      return;
+    }
+    abrirCerrarModal(idx);
+  } finally {
+    if (overlayPropio) ocultarCargando();
   }
-  abrirCerrarModal(idx);
 }
 
 function configurarTabs() {
