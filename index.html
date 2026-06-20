@@ -1720,6 +1720,8 @@ async function generarOT() {
     _metrics.upload_backend_ms = Math.round(performance.now() - _tUpload0);
     _metrics.total_ms = Math.round(performance.now() - _tStart);
     console.log('[OT-METRICS]', JSON.stringify(_metrics));
+    // TEMP: quitar tras medir. Alert en pantalla para capturar metricas en iPad sin DevTools.
+    alert('[OT-METRICS]\n' + JSON.stringify(_metrics, null, 2));
     if (result.ok) {
       _ultimoPDF = { folio: result.folio, blob: blobLocal, url: result.url };
       _firmaRecepcion = null;  // limpiar para no arrastrarla a la siguiente OT
