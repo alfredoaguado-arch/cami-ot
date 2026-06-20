@@ -1472,9 +1472,11 @@ async function enviarOT() {
   if (!d.proyecto)    return showToast('Selecciona un proyecto.', 'err');
   if (!d.etapa)       return showToast('Selecciona una etapa.', 'err');
   if (!d.responsable) return showToast('Responsable requerido.', 'err');
-  // Firma de recepcion obligatoria: capturarla antes de generar.
+  // v2.14: la firma de recepcion se captura en el modal de APROBAR (en campo,
+  // frente al responsable), no al crear. _firmaRecepcion queda null aqui;
+  // el recuadro "RECEPCION DEL RESPONSABLE" del PDF impreso queda vacio.
   _firmaRecepcion = null;
-  abrirFirmaRecepcionModal();
+  await generarOT();
 }
 
 // ── MODAL FIRMA DE RECEPCION (signature_pad) ──────────────────
@@ -1887,12 +1889,21 @@ function abrirAprobarModal(idx) {
     <div class="section-title" style="margin-bottom:8px">Materiales / BOM</div>
     ${matsHtml}
 
-    <div class="section-title" style="margin-top:16px;margin-bottom:8px">Tu Firma de Aprobacion</div>
-    <p style="font-size:11px;color:#4A4A48">Firma para aprobar esta OT. Al aprobar, queda autorizada para entrar a proceso.</p>
+    <div class="section-title" style="margin-top:16px;margin-bottom:8px">Firma del aprobador</div>
+    <p style="font-size:11px;color:#4A4A48">Tu firma como aprobador autoriza el inicio del trabajo.</p>
     <div class="firma-wrap">
       <canvas id="firma-aprobar-canvas" class="firma-canvas" width="800" height="320"></canvas>
       <div class="firma-actions">
         <button type="button" onclick="limpiarFirma('firma-aprobar-canvas')">Limpiar</button>
+      </div>
+    </div>
+
+    <div class="section-title" style="margin-top:16px;margin-bottom:8px">Firma de recepcion</div>
+    <p style="font-size:11px;color:#4A4A48">El responsable <strong>${escapeHtml(ot.responsable)}</strong> debe firmar su recepcion para aprobar la OT. Pasa el iPad para que firme.</p>
+    <div class="firma-wrap">
+      <canvas id="firma-recepcion-aprob-canvas" class="firma-canvas" width="800" height="320"></canvas>
+      <div class="firma-actions">
+        <button type="button" onclick="limpiarFirma('firma-recepcion-aprob-canvas')">Limpiar</button>
       </div>
     </div>
 
@@ -1902,7 +1913,10 @@ function abrirAprobarModal(idx) {
     </div>
   `;
   document.getElementById('aprobar-modal').classList.add('show');
-  setTimeout(() => initFirmaCanvas('firma-aprobar-canvas'), 50);
+  setTimeout(() => {
+    initFirmaCanvas('firma-aprobar-canvas');
+    initFirmaCanvas('firma-recepcion-aprob-canvas');
+  }, 50);
 }
 function cerrarAprobarModal() {
   document.getElementById('aprobar-modal').classList.remove('show');
@@ -1911,14 +1925,26 @@ function cerrarAprobarModal() {
 
 async function confirmarAprobacion() {
   if (!_otEnAprobacion) return;
-  if (firmaEstaVacia('firma-aprobar-canvas')) { showToast('Firma requerida para aprobar.', 'err'); return; }
+  // v2.14: ambas firmas son OBLIGATORIAS. Aprobar y recibir son el mismo acto.
+  // Sin las dos firmas (aprobador + responsable), no se puede aprobar la OT.
+  if (firmaEstaVacia('firma-aprobar-canvas')) {
+    showToast('Falta la firma del aprobador.', 'err'); return;
+  }
+  if (firmaEstaVacia('firma-recepcion-aprob-canvas')) {
+    showToast('Falta la firma de recepcion del responsable.', 'err'); return;
+  }
   const token = getToken(); if (!token) { abrirReloginModal(); return; }
   const firmaB64 = document.getElementById('firma-aprobar-canvas').toDataURL('image/png');
+  const firmaRecepcionB64 = document.getElementById('firma-recepcion-aprob-canvas').toDataURL('image/png');
 
   try {
     const r = await fetch(SCRIPT_URL, {
       method: 'POST', headers: { 'Content-Type': 'text/plain' },
-      body: JSON.stringify({ action: 'aprobarOT', token, folio: _otEnAprobacion.folio, firma: firmaB64 })
+      body: JSON.stringify({
+        action: 'aprobarOT', token, folio: _otEnAprobacion.folio,
+        firma: firmaB64,
+        firma_recepcion: firmaRecepcionB64
+      })
     });
     const data = await r.json();
     if (!data.ok) {

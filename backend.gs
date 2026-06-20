@@ -1,5 +1,5 @@
 // ================================================================
-// CAMI - Apps Script ORDENES DE TRABAJO v2.13
+// CAMI - Apps Script ORDENES DE TRABAJO v2.14
 // Bound al Sheet de OT (CAMI_OT_DB) - ID 12WU13Qp2DPXjaqAMuXg-yYYizuKqMU1K04v0nw0Ud7o
 //
 // REDISENIO COMPLETO vs v1.3:
@@ -48,7 +48,7 @@
 // Folder Drive Firmas:  (subcarpeta automatica dentro del folder de OT)
 // ================================================================
 
-const MODULE_VERSION = '2.13';
+const MODULE_VERSION = '2.14';
 
 const CENTRAL_URL  = 'https://script.google.com/macros/s/AKfycbw8Ucc9J3_TQcsAR0tn2Lk5DBN2bPWG6HF2pm3GfoEwa2NlRFQn5qZPVj7gy-IaLBSg/exec';
 const FOLDER_ID    = '1izB-ldGeOlpX_TPn5BOgkSQ0osb4j9Nw';
@@ -888,10 +888,15 @@ function handleAprobarOT(data) {
   const auth = autenticarConApp(data.token, APP_KEY_APROBAR);
   if (!auth.ok) return jsonResp(auth);
 
-  const folio    = String(data.folio || '').trim();
-  const firmaB64 = String(data.firma || '').trim();
-  if (!folio)    return jsonResp({ ok: false, error: 'folio requerido' });
-  if (!firmaB64) return jsonResp({ ok: false, error: 'firma requerida' });
+  const folio              = String(data.folio || '').trim();
+  const firmaB64           = String(data.firma || '').trim();
+  const firmaRecepcionB64  = String(data.firma_recepcion || '').trim();
+  if (!folio)              return jsonResp({ ok: false, error: 'folio requerido' });
+  if (!firmaB64)           return jsonResp({ ok: false, error: 'Firma del aprobador requerida' });
+  // v2.14: la firma de recepcion del responsable es OBLIGATORIA. Aprobar y
+  // recibir son el mismo acto: ambas personas (aprobador + responsable) firman
+  // juntas en el iPad. Sin las dos firmas no se aprueba la OT.
+  if (!firmaRecepcionB64)  return jsonResp({ ok: false, error: 'Firma de recepcion del responsable requerida' });
 
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(15000)) {
@@ -907,17 +912,24 @@ function handleAprobarOT(data) {
       return jsonResp({ ok: false, error: 'Esta OT ya esta en estado ' + ubicado.estado });
     }
 
-    // Guardar firma
+    // Guardar firma de aprobacion
     const idFirma = guardarFirma(ss, folio, 'APROBACION', auth.usuario.nombre, firmaB64);
+
+    // Guardar firma de recepcion (obligatoria — validada arriba).
+    // firmante = responsable de la fila OT (col E, idx 4).
+    const responsable = String(shOT.getRange(ubicado.fila, 5).getValue() || '').trim() || '(sin nombre)';
+    const idFirmaRecepcion = guardarFirma(ss, folio, 'RECEPCION', responsable, firmaRecepcionB64);
 
     // Actualizar cabecera
     shOT.getRange(ubicado.fila, 11).setValue('APROBADA');
     shOT.getRange(ubicado.fila, 13).setValue(auth.usuario.nombre);
     shOT.getRange(ubicado.fila, 14).setValue(new Date());
 
-    appendLog(ss, folio, 'APROBADA', auth.usuario.nombre, idFirma);
+    appendLog(ss, folio, 'APROBADA', auth.usuario.nombre,
+      idFirma + ' | RECEPCION:' + idFirmaRecepcion);
 
-    return jsonResp({ ok: true, folio: folio, estado: 'APROBADA', id_firma: idFirma });
+    return jsonResp({ ok: true, folio: folio, estado: 'APROBADA',
+      id_firma: idFirma, id_firma_recepcion: idFirmaRecepcion });
   } catch (err) {
     return jsonResp({ ok: false, error: err.message });
   } finally {
