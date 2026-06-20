@@ -601,7 +601,66 @@ async function init() {
     else if (tieneApp(APP_KEY_CERRAR)) changeTab('cerrar');
   }
   if (tieneApp(APP_KEY_APROBAR)) cargarPorAprobar();
-  if (tieneApp(APP_KEY_CERRAR))  cargarPorCerrar();
+  if (tieneApp(APP_KEY_CERRAR))  await cargarPorCerrar();
+  await rutearHash();
+}
+
+// ── ROUTING DE HASH (2026-06-20) ──────────────────────────────
+// Maneja URLs tipo #cerrar/<folio> (QR superior del PDF de OT).
+// Antes: no existia router de hash. Con la PWA cami-ot ya abierta en iPad,
+// el QR solo cambiaba location.hash; al no haber listener, la app no reaccionaba
+// y el supervisor quedaba en CREAR en vez de llegar al modal de cierre.
+// Ahora: dos puntos de entrada (final de init para cold-load + listener
+// hashchange para PWA ya abierta) disparan rutearHash().
+function tieneCambiosSinGuardarEnCrear() {
+  if (!tieneApp(APP_KEY)) return false;
+  const ids = ['titulo-actividad', 'ot-interna', 'tiempo', 'inspeccion', 'obs', 'entrega'];
+  for (let i = 0; i < ids.length; i++) {
+    const el = document.getElementById(ids[i]);
+    if (el && String(el.value || '').trim()) return true;
+  }
+  const proy = document.getElementById('proyecto'); if (proy && proy.value) return true;
+  const etap = document.getElementById('etapa');    if (etap && etap.value) return true;
+  if (typeof _itemsActuales !== 'undefined' && _itemsActuales && _itemsActuales.length) return true;
+  const filas = document.querySelectorAll('#materiales-body tr');
+  for (let i = 0; i < filas.length; i++) {
+    const inputs = filas[i].querySelectorAll('input');
+    for (let j = 0; j < inputs.length; j++) {
+      if (String(inputs[j].value || '').trim()) return true;
+    }
+  }
+  if (document.querySelector('#entregables-wrap input.ent-chk:checked')) return true;
+  return false;
+}
+
+async function rutearHash() {
+  const m = (location.hash || '').match(/^#cerrar\/(.+)$/);
+  if (!m) return;
+  const folio = decodeURIComponent(m[1]);
+  // Limpiar hash YA: si cancelan o falla, no queda colgando para el siguiente refresh.
+  // history.replaceState NO dispara hashchange, asi que no hay reentry.
+  history.replaceState(null, '', location.pathname + location.search);
+  if (!tieneApp(APP_KEY_CERRAR)) {
+    showToast('No tienes permiso para cerrar OTs.', 'err');
+    return;
+  }
+  if (_currentTab === 'crear' && tieneCambiosSinGuardarEnCrear()) {
+    const ok = confirm(
+      'Tienes una OT sin guardar en el formulario de creacion.\n\n' +
+      'Llego un QR de cierre de la OT ' + folio + '.\n' +
+      'Cambiar a la pestana CERRAR? Los datos del formulario se conservan.'
+    );
+    if (!ok) return;
+  }
+  changeTab('cerrar');
+  await cargarPorCerrar();
+  const idx = _cerrarCache.findIndex(function(o) { return o.folio === folio; });
+  if (idx === -1) {
+    showToast('OT <b>' + escapeHtml(folio) + '</b> no esta esperando cierre ' +
+              '(ya cerrada, no te toca, o no existe).', 'err');
+    return;
+  }
+  abrirCerrarModal(idx);
 }
 
 function configurarTabs() {
@@ -2494,6 +2553,7 @@ function generarQR(text) {
 }
 
 // ── ARRANQUE ──────────────────────────────────────────────────
+window.addEventListener('hashchange', rutearHash);
 init();
 </script>
 </body>
