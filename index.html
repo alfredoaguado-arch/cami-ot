@@ -22,6 +22,8 @@ body{background:#EFEFED;font-family:'Courier New',monospace;min-height:100vh;pad
 .masthead-right{text-align:right}
 .doc-title{font-size:11px;color:#888780;letter-spacing:.1em;text-transform:uppercase}
 .doc-sub{font-size:15px;font-weight:700;color:#fff;margin-top:2px}
+.masthead .hubbtn{display:inline-flex;align-items:center;gap:5px;background:transparent;color:#fff;border:0.5px solid #4A4A48;border-radius:6px;padding:7px 12px;font-family:'Courier New',monospace;font-size:12px;font-weight:700;letter-spacing:.04em;text-decoration:none;cursor:pointer;transition:border-color .15s,background .15s}
+.masthead .hubbtn:hover{background:#ED7D31;border-color:#ED7D31}
 .user-bar{background:#f5f3ee;padding:8px 2rem;font-size:11px;color:#4A4A48;display:flex;justify-content:space-between;border-bottom:0.5px solid #d3d1c7}
 .user-bar a{color:#A32D2D;text-decoration:none;font-weight:700}
 .tabs{display:flex;background:#fff;border-bottom:1px solid #d3d1c7;padding:0 1rem}
@@ -140,6 +142,7 @@ textarea{resize:vertical;min-height:60px}
 <div class="container">
   <div class="masthead">
     <div class="masthead-left">
+      <button class="hubbtn" onclick="location.href=LOGIN_URL" title="Volver al menú principal">← Inicio</button>
       <img id="logo-img" class="masthead-logo" alt="CAMI" style="display:none"/>
       <div class="logo-fallback" id="logo-fallback">
         <div class="logo-txt">CAMI</div>
