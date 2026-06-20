@@ -48,11 +48,15 @@
 // Folder Drive Firmas:  (subcarpeta automatica dentro del folder de OT)
 // ================================================================
 
-const MODULE_VERSION = '2.10.3';
+const MODULE_VERSION = '2.11';
 
 const CENTRAL_URL  = 'https://script.google.com/macros/s/AKfycbw8Ucc9J3_TQcsAR0tn2Lk5DBN2bPWG6HF2pm3GfoEwa2NlRFQn5qZPVj7gy-IaLBSg/exec';
 const FOLDER_ID    = '1izB-ldGeOlpX_TPn5BOgkSQ0osb4j9Nw';
 const LOGO_FILE_ID = '1J9yDatRxKTG_5AAPOpZblUMa-OPeJ5qP';
+// Raiz del arbol "CAMI - Planos" en Drive (sharing restringido). Subcarpetas por proyecto.
+// El endpoint planoBytes solo sirve archivos cuyo ancestro sea esta carpeta (defensa contra
+// pedidos de fileIds arbitrarios).
+const PLANOS_FOLDER_ID = '1kMtqJ5PzNse3EA_2uyouH1cZ8XCXG4eQ';
 
 const APP_KEY         = 'ot';
 const APP_KEY_APROBAR = 'ot-aprobar';
@@ -95,6 +99,7 @@ function doGet(e) {
     if (accion === 'verificar')        return handleVerificar(e.parameter.folio || '');
     if (accion === 'abrirPDF')         return handleAbrirPDF(e.parameter.folio || '');
     if (accion === 'firma')            return handleFirmaImg(e.parameter.id || '');
+    if (accion === 'planoBytes')       return handlePlanoBytes(e.parameter.fileId || '');
     if (accion === 'ping')             return jsonResp({ ok: true, version: MODULE_VERSION, module: 'cami-ot' });
     return jsonResp({ ok: false, error: 'Accion desconocida: ' + accion });
   } catch (err) {
@@ -277,7 +282,8 @@ function handleListaPlanosPorProyecto(proyecto) {
       title:         String(rows[i][4] || '').trim(),
       marks:         marks,
       url_publica:   String(rows[i][7] || '').trim(),
-      observaciones: String(rows[i][11] || '').trim()
+      observaciones: String(rows[i][11] || '').trim(),
+      drive_id:      String(rows[i][12] || '').trim()   // col M (nuevo). Si no esta, frontend cae a url_publica.
     });
   }
   return jsonResp({ ok: true, proyecto: proyecto, total: planos.length, planos: planos });
@@ -361,6 +367,47 @@ function handleFirmaImg(idFirma) {
     }
     if (!fileId) return jsonResp({ ok: false, error: 'Firma no encontrada' });
     const blob = DriveApp.getFileById(fileId).getBlob();
+    const b64  = Utilities.base64Encode(blob.getBytes());
+    return jsonResp({ ok: true, mime: blob.getContentType(), base64: b64 });
+  } catch (err) {
+    return jsonResp({ ok: false, error: err.message });
+  }
+}
+
+// Verifica que el file tenga a PLANOS_FOLDER_ID en su cadena de ancestros (max 6 niveles).
+// Evita servir fileIds arbitrarios. Devuelve true si pertenece al arbol de planos.
+function _esDescendienteDePlanos(file) {
+  let level = 0;
+  const queue = [];
+  const it = file.getParents();
+  while (it.hasNext()) queue.push(it.next());
+  while (queue.length && level < 6) {
+    const next = [];
+    for (let i = 0; i < queue.length; i++) {
+      const p = queue[i];
+      if (p.getId() === PLANOS_FOLDER_ID) return true;
+      const sub = p.getParents();
+      while (sub.hasNext()) next.push(sub.next());
+    }
+    queue.length = 0;
+    Array.prototype.push.apply(queue, next);
+    level++;
+  }
+  return false;
+}
+
+// Proxy de bytes de un plano: lee el blob con la identidad del script (los planos en Drive
+// quedan privados) y devuelve {ok, mime, base64} igual que handleFirmaImg. El frontend
+// hace base64->ArrayBuffer y se lo pasa a pdf-lib sin tocar el flujo de anexado.
+function handlePlanoBytes(fileId) {
+  fileId = String(fileId || '').trim();
+  if (!fileId) return jsonResp({ ok: false, error: 'fileId requerido' });
+  try {
+    const file = DriveApp.getFileById(fileId);
+    if (!_esDescendienteDePlanos(file)) {
+      return jsonResp({ ok: false, error: 'fileId no autorizado' });
+    }
+    const blob = file.getBlob();
     const b64  = Utilities.base64Encode(blob.getBytes());
     return jsonResp({ ok: true, mime: blob.getContentType(), base64: b64 });
   } catch (err) {

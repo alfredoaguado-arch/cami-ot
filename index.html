@@ -1427,7 +1427,36 @@ async function descargarPDFRemoto(url, intentos = 3) {
   throw ultimoError;
 }
 
+// P3a-Drive: descarga el binario de un plano via el endpoint proxy planoBytes del backend.
+// El backend lee Drive con su identidad (los planos en Drive quedan privados) y devuelve
+// {ok, mime, base64}. Aquí decodificamos a ArrayBuffer y validamos magic number igual que
+// con la fuente remota. 3 reintentos por si el primero falla por red.
+async function descargarPlanoDrive(fileId, intentos = 3) {
+  let ultimoError;
+  for (let i = 0; i < intentos; i++) {
+    try {
+      const resp = await fetch(SCRIPT_URL + '?accion=planoBytes&fileId=' + encodeURIComponent(fileId));
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const data = await resp.json();
+      if (!data.ok) throw new Error(data.error || 'backend rechazo el pedido');
+      // base64 -> Uint8Array -> ArrayBuffer
+      const bin = atob(data.base64);
+      const u8 = new Uint8Array(bin.length);
+      for (let j = 0; j < bin.length; j++) u8[j] = bin.charCodeAt(j);
+      const header = new TextDecoder().decode(u8.slice(0, 5));
+      if (header !== '%PDF-') throw new Error('Respuesta no es un PDF valido (header: ' + header + ')');
+      return u8.buffer;
+    } catch (err) {
+      ultimoError = err;
+      if (i < intentos - 1) await new Promise(r => setTimeout(r, 500));
+    }
+  }
+  throw ultimoError;
+}
+
 // P3a: descarga todos los planos del item con progreso. Maneja fallos con confirm().
+// Si el plano trae drive_id, usa el proxy del backend (Drive privado). Si no, cae al fetch
+// directo de url_publica (compatibilidad con cargas viejas en Supabase u otros host publicos).
 // Devuelve un array de ArrayBuffer (solo los planos descargados con exito).
 async function prepararPlanos(planos, onProgress) {
   const bytesOk = [];
@@ -1437,9 +1466,15 @@ async function prepararPlanos(planos, onProgress) {
     const p = planos[i];
     const etiqueta = p.codigo || ('Plano ' + (i + 1));
     if (onProgress) onProgress(i + 1, total, etiqueta);
-    if (!p.url_publica) { fallos.push(etiqueta + ' (sin URL)'); continue; }
+    const tieneDrive = !!(p.drive_id && String(p.drive_id).trim());
+    const tieneUrl   = !!(p.url_publica && String(p.url_publica).trim());
+    if (!tieneDrive && !tieneUrl) { fallos.push(etiqueta + ' (sin URL ni drive_id)'); continue; }
     try {
-      bytesOk.push(await descargarPDFRemoto(p.url_publica));
+      if (tieneDrive) {
+        bytesOk.push(await descargarPlanoDrive(String(p.drive_id).trim()));
+      } else {
+        bytesOk.push(await descargarPDFRemoto(p.url_publica));
+      }
     } catch (err) {
       fallos.push(etiqueta);
     }
