@@ -439,6 +439,22 @@ textarea{resize:vertical;min-height:60px}
   </div>
 </div>
 
+<!-- Modal: aviso generico (OT no esta en la lista por cerrar) -->
+<div id="aviso-modal" class="modal-overlay">
+  <div class="modal-box">
+    <div class="modal-header"><strong>AVISO</strong></div>
+    <div class="modal-body">
+      <div style="text-align:center;margin-bottom:14px">
+        <div style="font-size:36px;color:#8B6914">&#9888;</div>
+      </div>
+      <div id="aviso-modal-msg" style="font-size:13px;color:#1a1a18;line-height:1.6;background:#FFF4D6;border:1px solid #f0d999;border-radius:6px;padding:14px;margin-bottom:14px"></div>
+      <div class="modal-actions" style="flex-direction:column;gap:8px">
+        <button class="btn-primary" onclick="cerrarAvisoModal()">Entendido</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Modal: progreso de generacion / anexado de planos -->
 <div id="cargando-modal" class="modal-overlay">
   <div class="modal-box" style="max-width:340px">
@@ -696,8 +712,15 @@ async function rutearHash(opts) {
     if (!opts.skipReload) await cargarPorCerrar();
     const idx = _cerrarCache.findIndex(function(o) { return o.folio === folio; });
     if (idx === -1) {
-      showToast('OT <b>' + escapeHtml(folio) + '</b> no esta esperando cierre ' +
-                '(ya cerrada, no te toca, o no existe).', 'err');
+      // Ocultar el overlay de cargando ANTES de mostrar el aviso, para no
+      // superponer dos modales. ocultarCargando es idempotente; el finally
+      // del try la llamara de nuevo sin efecto.
+      ocultarCargando();
+      mostrarAvisoModal(
+        '<strong>OT ' + escapeHtml(folio) + '</strong> no esta en tu lista por cerrar.<br><br>' +
+        'Puede ser: <b>ya cerrada</b>, asignada a otra cuadrilla, o el folio escaneado es incorrecto.<br><br>' +
+        'Verifica con planta antes de continuar.'
+      );
       return;
     }
     abrirCerrarModal(idx);
@@ -1699,6 +1722,12 @@ function mostrarExitoModal(folio, driveUrl) {
   document.getElementById('exito-modal').classList.add('show');
 }
 function cerrarExitoModal() { document.getElementById('exito-modal').classList.remove('show'); }
+
+function mostrarAvisoModal(htmlMsg) {
+  document.getElementById('aviso-modal-msg').innerHTML = htmlMsg;
+  document.getElementById('aviso-modal').classList.add('show');
+}
+function cerrarAvisoModal() { document.getElementById('aviso-modal').classList.remove('show'); }
 
 function mostrarCargando(msg) {
   document.getElementById('cargando-mensaje').textContent = msg;
