@@ -1986,6 +1986,112 @@ function cerrarAprobarModal() {
   _otEnAprobacion = null; _firmaCanvas = null;
 }
 
+// v2.19 (compartido aprobar+cerrar): coordenadas de las 3 cajas de firmas en
+// el grid de drawGridFirmas (mm, top-down jsPDF). El helper de inyeccion las
+// convierte a pt y a Y bottom-up para pdf-lib. Padding interno 2mm; ver
+// drawGridFirmas para la derivacion completa.
+const FIRMA_BOX_COORDS = {
+  APROBACION: { x_mm: 145.267, y_mm_top: 189.4 },  // fila 1, col 2
+  CIERRE:     { x_mm:  80.633, y_mm_top: 189.4 },  // fila 1, col 1
+  RECEPCION:  { x_mm:  16,     y_mm_top: 237.4 }   // fila 2, col 0
+};
+const FIRMA_BOX_INNER_W_MM = 58.633 - 4;  // colW - padding(2+2)
+const FIRMA_BOX_INNER_H_MM = 32 - 4;      // boxH - padding(2+2)
+
+// v2.19: helper compartido entre aprobar y cerrar. Descarga el PDF del fileId
+// indicado, inyecta las firmas listadas con pdf-lib en las coordenadas del
+// mapa FIRMA_BOX_COORDS, y re-sube IN-PLACE via sesion resumable PATCH al
+// mismo fileId. NO toca el Sheet — eso lo hace el caller despues con su
+// endpoint correspondiente (aprobarOT / cerrarOT).
+//
+// opts = {
+//   fileId:    string         — fileId del PDF en Drive (extraido del pdf_url),
+//   firmas:    Array<{tipo,b64}> — tipo en FIRMA_BOX_COORDS, b64 PNG dataURL,
+//   token:     string         — token de sesion del usuario logueado,
+//   onProgress:(msg)=>void    — callback para spinner contextual (actualizarCargando)
+// }
+// Throws Error en cualquier fallo. Caller maneja sesion expirada via /sesion/.test(message).
+async function inyectarFirmasYReuploadPDF(opts) {
+  const { fileId, firmas, token } = opts;
+  const onProgress = opts.onProgress || function(){};
+
+  // 1. Descargar bytes del PDF actual desde Drive (via proxy backend).
+  onProgress('Descargando PDF...');
+  const respDl = await fetch(SCRIPT_URL, {
+    method: 'POST', headers: { 'Content-Type': 'text/plain' },
+    body: JSON.stringify({ action: 'descargarOT', token: token, fileId: fileId })
+  });
+  const resDl = await respDl.json();
+  if (!resDl.ok) throw new Error('Descargar PDF: ' + (resDl.error || 'desconocido'));
+  const dlBin = atob(resDl.base64);
+  const pdfBytes = new Uint8Array(dlBin.length);
+  for (let i = 0; i < dlBin.length; i++) pdfBytes[i] = dlBin.charCodeAt(i);
+
+  // 2. Cargar con pdf-lib y localizar la pagina de firmas.
+  onProgress('Insertando firmas...');
+  const { PDFDocument } = PDFLib;
+  const pdfDoc = await PDFDocument.load(pdfBytes);
+
+  // Leer firma_page del subject (META_PREFIX + JSON). Fallback: pagina 2.
+  let firmaPage = 2;
+  const subject = pdfDoc.getSubject() || '';
+  if (subject.indexOf(META_PREFIX) === 0) {
+    try {
+      const meta = JSON.parse(subject.substring(META_PREFIX.length));
+      if (meta.firma_page) firmaPage = parseInt(meta.firma_page, 10);
+    } catch (e) {}
+  }
+  const pageIdx = firmaPage - 1;
+  if (pageIdx < 0 || pageIdx >= pdfDoc.getPageCount()) {
+    throw new Error('Pagina de firmas fuera de rango: ' + firmaPage);
+  }
+  const page = pdfDoc.getPage(pageIdx);
+
+  // 3. Embed PNG + drawImage para cada firma en su caja correspondiente.
+  // pdf-lib usa Y bottom-up; jsPDF usa top-down. Convertimos mm -> pt y
+  // flippeamos Y restando del page height.
+  const mmToPt = 2.83464567;
+  const pageHeightPt = page.getHeight();
+  const fwPt = FIRMA_BOX_INNER_W_MM * mmToPt;
+  const fhPt = FIRMA_BOX_INNER_H_MM * mmToPt;
+  for (let i = 0; i < firmas.length; i++) {
+    const f = firmas[i];
+    const coords = FIRMA_BOX_COORDS[f.tipo];
+    if (!coords) throw new Error('Tipo de firma desconocido: ' + f.tipo);
+    // Strip "data:image/png;base64," si viene con prefijo dataURL.
+    const b64Stripped = (f.b64 || '').indexOf(',') > -1 ? f.b64.split(',')[1] : f.b64;
+    const bin = atob(b64Stripped);
+    const bytes = new Uint8Array(bin.length);
+    for (let j = 0; j < bin.length; j++) bytes[j] = bin.charCodeAt(j);
+    const img = await pdfDoc.embedPng(bytes);
+    page.drawImage(img, {
+      x: coords.x_mm * mmToPt,
+      y: pageHeightPt - (coords.y_mm_top + FIRMA_BOX_INNER_H_MM) * mmToPt,
+      width: fwPt,
+      height: fhPt
+    });
+  }
+  const updatedBytes = await pdfDoc.save();
+
+  // 4. Mintear sesion resumable PATCH (mismo fileId).
+  onProgress('Preparando upload del PDF firmado...');
+  const respInit = await fetch(SCRIPT_URL, {
+    method: 'POST', headers: { 'Content-Type': 'text/plain' },
+    body: JSON.stringify({ action: 'iniciarActualizarPDF', token: token, file_id: fileId })
+  });
+  const resInit = await respInit.json();
+  if (!resInit.ok) throw new Error('iniciarActualizarPDF: ' + (resInit.error || 'desconocido'));
+
+  // 5. PUT directo a Drive con los bytes actualizados.
+  onProgress('Subiendo PDF firmado a Drive...');
+  const respPut = await fetch(resInit.sessionUrl, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/pdf' },
+    body: updatedBytes
+  });
+  if (!respPut.ok) throw new Error('PUT in-place fallo: HTTP ' + respPut.status);
+}
+
 async function confirmarAprobacion() {
   if (!_otEnAprobacion) return;
   // v2.14+v2.17: validaciones obligatorias. Uso alert() en lugar de showToast
@@ -2017,96 +2123,16 @@ async function confirmarAprobacion() {
     if (!m) throw new Error('No se pudo extraer fileId del pdf_url');
     const fileId = m[1];
 
-    // 2. Descargar bytes del PDF (descargarOT devuelve base64).
-    actualizarCargando('Descargando PDF...');
-    const respDl = await fetch(SCRIPT_URL, {
-      method: 'POST', headers: { 'Content-Type': 'text/plain' },
-      body: JSON.stringify({ action: 'descargarOT', token, fileId: fileId })
+    // 2-5. Helper compartido v2.19: descarga + inyecta APROBACION + RECEPCION + reupload IN-PLACE.
+    await inyectarFirmasYReuploadPDF({
+      fileId: fileId,
+      firmas: [
+        { tipo: 'APROBACION', b64: firmaB64 },
+        { tipo: 'RECEPCION',  b64: firmaRecepcionB64 }
+      ],
+      token: token,
+      onProgress: actualizarCargando
     });
-    const resDl = await respDl.json();
-    if (!resDl.ok) {
-      if (/sesion/i.test(resDl.error || '')) { cerrarAprobarModal(); abrirReloginModal(); return; }
-      throw new Error('Descargar PDF: ' + (resDl.error || 'desconocido'));
-    }
-    const dlBin = atob(resDl.base64);
-    const pdfBytes = new Uint8Array(dlBin.length);
-    for (let i = 0; i < dlBin.length; i++) pdfBytes[i] = dlBin.charCodeAt(i);
-
-    // 3. Inyectar las dos firmas con pdf-lib.
-    actualizarCargando('Insertando firmas...');
-    const { PDFDocument } = PDFLib;
-    const pdfDoc = await PDFDocument.load(pdfBytes);
-
-    // Leer firma_page del subject (META_PREFIX + JSON). Fallback: pagina 2.
-    let firmaPage = 2;
-    const subject = pdfDoc.getSubject() || '';
-    if (subject.indexOf(META_PREFIX) === 0) {
-      try {
-        const meta = JSON.parse(subject.substring(META_PREFIX.length));
-        if (meta.firma_page) firmaPage = parseInt(meta.firma_page, 10);
-      } catch (e) {}
-    }
-    const pageIdx = firmaPage - 1;
-    if (pageIdx < 0 || pageIdx >= pdfDoc.getPageCount()) {
-      throw new Error('Pagina de firmas fuera de rango: ' + firmaPage);
-    }
-    const page = pdfDoc.getPage(pageIdx);
-
-    // Embed PNGs
-    const aprobB64Stripped = firmaB64.split(',')[1];
-    const recepB64Stripped = firmaRecepcionB64.split(',')[1];
-    const aprobBin = atob(aprobB64Stripped);
-    const recepBin = atob(recepB64Stripped);
-    const aprobBytes = new Uint8Array(aprobBin.length);
-    const recepBytes = new Uint8Array(recepBin.length);
-    for (let i = 0; i < aprobBin.length; i++) aprobBytes[i] = aprobBin.charCodeAt(i);
-    for (let i = 0; i < recepBin.length; i++) recepBytes[i] = recepBin.charCodeAt(i);
-    const aprobImg = await pdfDoc.embedPng(aprobBytes);
-    const recepImg = await pdfDoc.embedPng(recepBytes);
-
-    // Coordenadas — derivadas del layout de drawGridFirmas (mm) convertidas a pt.
-    // Layout: W=215.9mm, H=279.4mm, pL=14, gap=6, colW=58.633, boxH=32,
-    // alturaFirmas=92, padding interno 2mm c/lado.
-    //   zy = H - alturaFirmas = 187.4   (top fila 1)
-    //   row2 = zy + 48 = 235.4          (top fila 2)
-    //   cx[0]=14, cx[2]=143.267
-    // pdf-lib: Y crece hacia ARRIBA, opuesta a jsPDF (top-down).
-    const mmToPt = 2.83464567;
-    const pageHeightPt = page.getHeight();
-    // APROBADOR: row 1, col 2 → x=cx[2]+2=145.267, top=zy+2=189.4
-    const aprX = 145.267 * mmToPt;
-    const aprY = pageHeightPt - (189.4 + 28) * mmToPt;
-    // RECEPCION: row 2, col 0 → x=cx[0]+2=16, top=row2+2=237.4
-    const recX = 16 * mmToPt;
-    const recY = pageHeightPt - (237.4 + 28) * mmToPt;
-    const fwPt = (58.633 - 4) * mmToPt;
-    const fhPt = (32 - 4) * mmToPt;
-
-    page.drawImage(aprobImg, { x: aprX, y: aprY, width: fwPt, height: fhPt });
-    page.drawImage(recepImg, { x: recX, y: recY, width: fwPt, height: fhPt });
-
-    const updatedBytes = await pdfDoc.save();
-
-    // 4. Pedir sesion resumable IN-PLACE (PATCH al mismo fileId).
-    actualizarCargando('Preparando upload del PDF firmado...');
-    const respInit = await fetch(SCRIPT_URL, {
-      method: 'POST', headers: { 'Content-Type': 'text/plain' },
-      body: JSON.stringify({ action: 'iniciarActualizarPDF', token, file_id: fileId })
-    });
-    const resInit = await respInit.json();
-    if (!resInit.ok) {
-      if (/sesion/i.test(resInit.error || '')) { cerrarAprobarModal(); abrirReloginModal(); return; }
-      throw new Error('iniciarActualizarPDF: ' + (resInit.error || 'desconocido'));
-    }
-
-    // 5. PUT directo a Drive con los bytes actualizados.
-    actualizarCargando('Subiendo PDF firmado a Drive...');
-    const respPut = await fetch(resInit.sessionUrl, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/pdf' },
-      body: updatedBytes
-    });
-    if (!respPut.ok) throw new Error('PUT in-place fallo: HTTP ' + respPut.status);
 
     // 6. Marcar APROBADA + guardar firmas en OT_FIRMAS.
     actualizarCargando('Registrando aprobacion...');
@@ -2130,6 +2156,9 @@ async function confirmarAprobacion() {
     cargarPorAprobar();
     if (tieneApp(APP_KEY_CERRAR)) cargarPorCerrar();
   } catch (e) {
+    // v2.19: si el helper o el endpoint final reporta sesion invalida,
+    // forzar relogin (igual que el flujo inline pre-helper).
+    if (/sesion/i.test(e.message || '')) { cerrarAprobarModal(); abrirReloginModal(); return; }
     showToast('Error: ' + escapeHtml(e.message), 'err');
   } finally {
     ocultarCargando();
@@ -2296,12 +2325,13 @@ function cerrarCerrarModal() {
 }
 
 async function confirmarCierre() {
-  // Guard de reentrada: si el operador hace doble-clic mientras el POST esta en vuelo,
-  // el segundo clic se ignora silenciosamente. Defensa del cliente; backend tambien es
-  // idempotente via LockService + validacion de estado, pero esto evita el toast feo.
+  // Guard de reentrada anti-doble-clic. Defensa del cliente; backend tambien
+  // es idempotente via LockService + validacion de estado.
   if (_cerrandoOT) return;
   if (!_otEnCierre) return;
-  if (firmaEstaVacia('firma-cerrar-canvas')) { showToast('Firma del supervisor requerida.', 'err'); return; }
+  // v2.19: alert en lugar de showToast — el toast queda detras del modal y
+  // el supervisor no lo ve (mismo patron que confirmarAprobacion).
+  if (firmaEstaVacia('firma-cerrar-canvas')) { alert('Firma del supervisor requerida.'); return; }
   const token = getToken(); if (!token) { abrirReloginModal(); return; }
   const firmaB64 = document.getElementById('firma-cerrar-canvas').toDataURL('image/png');
 
@@ -2310,7 +2340,6 @@ async function confirmarCierre() {
   document.querySelectorAll('#checklist-cerrar input[type=checkbox]').forEach((chk, idx) => {
     const seccion = chk.dataset.seccion;
     const item = chk.dataset.item;
-    // Buscar el text input hermano en el mismo .check-item
     const notaInput = chk.closest('.check-item').querySelector('input[type=text]');
     checks.push({
       seccion: seccion,
@@ -2331,8 +2360,30 @@ async function confirmarCierre() {
     btn.style.opacity = '0.7';
     btn.style.cursor = 'wait';
   }
+  // v2.19: spinner contextual durante download + inyeccion + reupload + registro.
+  mostrarCargando('Preparando cierre...');
 
   try {
+    // 1. Extraer fileId del pdf_url de la OT.
+    const pdfUrl = String(_otEnCierre.pdf_url || '');
+    const mUrl = pdfUrl.match(/\/file\/d\/([^\/\?]+)/);
+    if (!mUrl) throw new Error('No se pudo extraer fileId del pdf_url');
+    const fileId = mUrl[1];
+
+    // 2-5. Helper compartido v2.19: descarga + inyecta CIERRE + reupload IN-PLACE.
+    // ORDEN IMPORTANTE: primero re-subimos el PDF firmado; despues marcamos
+    // COMPLETADA. Si el reupload falla, la OT queda APROBADA/EN_PROCESO y el
+    // supervisor puede reintentar. Inverso dejaria OTs COMPLETADA con PDF sin
+    // firma de cierre.
+    await inyectarFirmasYReuploadPDF({
+      fileId: fileId,
+      firmas: [{ tipo: 'CIERRE', b64: firmaB64 }],
+      token: token,
+      onProgress: actualizarCargando
+    });
+
+    // 6. Registrar COMPLETADA + guardar firma de cierre en OT_FIRMAS.
+    actualizarCargando('Registrando cierre...');
     const r = await fetch(SCRIPT_URL, {
       method: 'POST', headers: { 'Content-Type': 'text/plain' },
       body: JSON.stringify({
@@ -2343,17 +2394,19 @@ async function confirmarCierre() {
     const data = await r.json();
     if (!data.ok) {
       if (/sesion/i.test(data.error || '')) { cerrarCerrarModal(); abrirReloginModal(); return; }
-      showToast('Error: ' + escapeHtml(data.error), 'err'); return;
+      throw new Error('cerrarOT: ' + data.error);
     }
     showToast('OT <b>' + escapeHtml(_otEnCierre.folio) + '</b> marcada como completada.', 'ok');
     cerrarCerrarModal();
     cargarPorCerrar();
   } catch (e) {
+    // v2.19: si helper o endpoint reporta sesion invalida, forzar relogin.
+    if (/sesion/i.test(e.message || '')) { cerrarCerrarModal(); abrirReloginModal(); return; }
     showToast('Error: ' + escapeHtml(e.message), 'err');
   } finally {
+    ocultarCargando();
     // Re-habilitar el boton SIEMPRE. Si el modal se cerro (caso OK o sesion expirada)
-    // el boton es huerfano hasta la proxima apertura del modal, no afecta UX. Si hubo
-    // error visible (red, otro), el operador puede reintentar.
+    // el boton es huerfano hasta la proxima apertura del modal, no afecta UX.
     _cerrandoOT = false;
     if (btn) {
       btn.disabled = false;

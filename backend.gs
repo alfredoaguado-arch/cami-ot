@@ -1,5 +1,5 @@
 // ================================================================
-// CAMI - Apps Script ORDENES DE TRABAJO v2.18
+// CAMI - Apps Script ORDENES DE TRABAJO v2.19
 // Bound al Sheet de OT (CAMI_OT_DB) - ID 12WU13Qp2DPXjaqAMuXg-yYYizuKqMU1K04v0nw0Ud7o
 //
 // REDISENIO COMPLETO vs v1.3:
@@ -48,7 +48,7 @@
 // Folder Drive Firmas:  (subcarpeta automatica dentro del folder de OT)
 // ================================================================
 
-const MODULE_VERSION = '2.18';
+const MODULE_VERSION = '2.19';
 
 // v2.16: Origin del frontend (PWA en GitHub Pages). Cuando handleIniciarUploadPDF
 // inicia la sesion resumable de Drive, debe enviar este Origin para que Drive
@@ -747,8 +747,19 @@ function handleIniciarUploadPDF(data) {
 // Drive REST: PATCH /upload/drive/v3/files/{fileId}?uploadType=resumable.
 // CORS preservado igual que iniciarUploadPDF (Origin obligatorio).
 function handleIniciarActualizarPDF(data) {
-  const auth = autenticarConApp(data.token, APP_KEY_APROBAR);
-  if (!auth.ok) return jsonResp(auth);
+  // v2.19: aceptar APP_KEY_APROBAR (inyeccion APROBACION+RECEPCION al aprobar)
+  // o APP_KEY_CERRAR (inyeccion CIERRE al cerrar). Mismo patron de update
+  // resumable in-place, distinto firmante.
+  const token = String(data.token || '').trim();
+  if (!token) return jsonResp({ ok: false, error: 'Sesion requerida' });
+  const usuario = validarTokenCentral(token);
+  if (!usuario) return jsonResp({ ok: false, error: 'Sesion invalida o expirada' });
+  const apps = usuario.apps || [];
+  if (apps.length &&
+      apps.indexOf(APP_KEY_APROBAR) === -1 &&
+      apps.indexOf(APP_KEY_CERRAR) === -1) {
+    return jsonResp({ ok: false, error: 'No tienes permiso para esta accion' });
+  }
 
   const fileId = String(data.file_id || '').trim();
   if (!fileId) return jsonResp({ ok: false, error: 'file_id requerido' });
@@ -1025,12 +1036,17 @@ function _recolectarPDFsDeCarpeta(folder, archivos) {
 function handleDescargarOT(data) {
   // v2.17: aceptar APP_KEY (creador) o APP_KEY_APROBAR (aprobador necesita
   // descargar el PDF para inyectar firmas con pdf-lib al aprobar la OT).
+  // v2.19: tambien APP_KEY_CERRAR (cerrador necesita descargar el PDF para
+  // inyectar la firma de cierre con pdf-lib).
   const token = String(data.token || '').trim();
   if (!token) return jsonResp({ ok: false, error: 'Sesion requerida' });
   const usuario = validarTokenCentral(token);
   if (!usuario) return jsonResp({ ok: false, error: 'Sesion invalida o expirada' });
   const apps = usuario.apps || [];
-  if (apps.length && apps.indexOf(APP_KEY) === -1 && apps.indexOf(APP_KEY_APROBAR) === -1) {
+  if (apps.length &&
+      apps.indexOf(APP_KEY) === -1 &&
+      apps.indexOf(APP_KEY_APROBAR) === -1 &&
+      apps.indexOf(APP_KEY_CERRAR) === -1) {
     return jsonResp({ ok: false, error: 'No tienes permiso para esta accion' });
   }
 
