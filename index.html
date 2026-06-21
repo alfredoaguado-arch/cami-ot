@@ -1720,11 +1720,16 @@ async function generarOT() {
     actualizarCargando('Preparando subida a Drive...');
     btn.textContent = 'Enviando...';
     const _tIniciar0 = performance.now();
+    // v2.18: primer mark del lote (si hay) — se prefija al name del archivo en
+    // Drive para identificar visualmente las OTs en una carpeta llena.
+    const _primerMark = (d.lote_marks && d.lote_marks[0] && d.lote_marks[0].mark)
+      ? String(d.lote_marks[0].mark).trim() : '';
     const respInit = await fetch(SCRIPT_URL, {
       method: 'POST', headers: { 'Content-Type': 'text/plain' },
       body: JSON.stringify({
         action: 'iniciarUploadPDF', token,
-        folio: folioReal, proyecto: d.proyecto, etapa: d.etapa
+        folio: folioReal, proyecto: d.proyecto, etapa: d.etapa,
+        primer_mark: _primerMark
       })
     });
     const resInit = await respInit.json();

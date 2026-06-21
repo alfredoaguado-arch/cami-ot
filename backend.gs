@@ -1,5 +1,5 @@
 // ================================================================
-// CAMI - Apps Script ORDENES DE TRABAJO v2.17
+// CAMI - Apps Script ORDENES DE TRABAJO v2.18
 // Bound al Sheet de OT (CAMI_OT_DB) - ID 12WU13Qp2DPXjaqAMuXg-yYYizuKqMU1K04v0nw0Ud7o
 //
 // REDISENIO COMPLETO vs v1.3:
@@ -48,7 +48,7 @@
 // Folder Drive Firmas:  (subcarpeta automatica dentro del folder de OT)
 // ================================================================
 
-const MODULE_VERSION = '2.17';
+const MODULE_VERSION = '2.18';
 
 // v2.16: Origin del frontend (PWA en GitHub Pages). Cuando handleIniciarUploadPDF
 // inicia la sesion resumable de Drive, debe enviar este Origin para que Drive
@@ -667,6 +667,11 @@ function handleIniciarUploadPDF(data) {
   const folio    = String(data.folio || '').trim();
   const proyecto = String(data.proyecto || '').trim();
   const etapa    = String(data.etapa || '').trim();
+  // v2.18: primer_mark del lote (opcional). Si viene, se prefija al nombre del
+  // archivo para que sean visualmente identificables al ojeo en Drive.
+  // Sanitizamos a [A-Za-z0-9-_] para evitar caracteres problematicos en el name.
+  const primerMarkRaw = String(data.primer_mark || '').trim();
+  const primerMark = primerMarkRaw.replace(/[^A-Za-z0-9\-_]/g, '_');
   if (!folio)    return jsonResp({ ok: false, error: 'folio requerido' });
   if (!proyecto) return jsonResp({ ok: false, error: 'proyecto requerido' });
   if (!etapa)    return jsonResp({ ok: false, error: 'etapa requerida' });
@@ -675,8 +680,9 @@ function handleIniciarUploadPDF(data) {
     const folder = obtenerCarpetaProyectoEtapa(proyecto, etapa);
     const folderId = folder.getId();
 
+    const nombreArchivo = (primerMark ? primerMark + '_' : '') + folio + '.pdf';
     const metadata = {
-      name: folio + '.pdf',
+      name: nombreArchivo,
       parents: [folderId],
       mimeType: 'application/pdf'
     };
