@@ -1949,9 +1949,10 @@ function abrirAprobarModal(idx) {
     </div>
 
     <div class="section-title" style="margin-top:16px;margin-bottom:8px">Receptor de la OT</div>
-    <p style="font-size:11px;color:#4A4A48">Escribe el nombre de la persona en campo que recibe la OT y luego pasale el iPad para que firme.</p>
+    <p style="font-size:11px;color:#4A4A48">Por defecto es el responsable que se registro al crear la OT. Editalo si en campo recibe otra persona.</p>
     <div style="margin-bottom:12px">
       <input type="text" id="receptor-nombre" placeholder="Nombre completo de quien recibe la OT"
+             value="${escapeAttr(ot.responsable || '')}"
              style="width:100%;padding:10px;border:1px solid #d3d1c7;border-radius:6px;font-family:'Courier New',monospace;font-size:13px"
              autocomplete="off"/>
     </div>
@@ -1982,16 +1983,17 @@ function cerrarAprobarModal() {
 
 async function confirmarAprobacion() {
   if (!_otEnAprobacion) return;
-  // v2.14: ambas firmas son OBLIGATORIAS. Aprobar y recibir son el mismo acto.
+  // v2.14+v2.17: validaciones obligatorias. Uso alert() en lugar de showToast
+  // porque el toast vive inline en la pestana (debajo del modal) y no se ve
+  // mientras el modal de aprobacion esta abierto. alert es nativo, encima de todo.
   if (firmaEstaVacia('firma-aprobar-canvas')) {
-    showToast('Falta la firma del aprobador.', 'err'); return;
+    alert('Falta la firma del aprobador.'); return;
   }
   if (firmaEstaVacia('firma-recepcion-aprob-canvas')) {
-    showToast('Falta la firma del receptor.', 'err'); return;
+    alert('Falta la firma del receptor.'); return;
   }
-  // v2.17: receptor_nombre obligatorio (texto libre)
   const receptorNombre = String(document.getElementById('receptor-nombre').value || '').trim();
-  if (!receptorNombre) { showToast('Falta el nombre del receptor.', 'err'); return; }
+  if (!receptorNombre) { alert('Falta el nombre del receptor.'); return; }
 
   const token = getToken(); if (!token) { abrirReloginModal(); return; }
   const firmaB64 = document.getElementById('firma-aprobar-canvas').toDataURL('image/png');
