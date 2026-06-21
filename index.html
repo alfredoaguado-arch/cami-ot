@@ -1724,6 +1724,7 @@ async function generarOT() {
       return;
     }
     const sessionUrl = resInit.sessionUrl;
+    _metrics.cors_origin = resInit.cors_origin || '(vacio)';  // v2.16 diagnostico CORS
 
     // 5. v2.15: PUT directo a Drive con los bytes del PDF. Bypassea Apps Script.
     actualizarCargando('Subiendo a Drive...');

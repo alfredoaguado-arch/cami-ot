@@ -1,5 +1,5 @@
 // ================================================================
-// CAMI - Apps Script ORDENES DE TRABAJO v2.15
+// CAMI - Apps Script ORDENES DE TRABAJO v2.16
 // Bound al Sheet de OT (CAMI_OT_DB) - ID 12WU13Qp2DPXjaqAMuXg-yYYizuKqMU1K04v0nw0Ud7o
 //
 // REDISENIO COMPLETO vs v1.3:
@@ -48,7 +48,13 @@
 // Folder Drive Firmas:  (subcarpeta automatica dentro del folder de OT)
 // ================================================================
 
-const MODULE_VERSION = '2.15';
+const MODULE_VERSION = '2.16';
+
+// v2.16: Origin del frontend (PWA en GitHub Pages). Cuando handleIniciarUploadPDF
+// inicia la sesion resumable de Drive, debe enviar este Origin para que Drive
+// devuelva una session URL CORS-habilitada para este origin. Sin esto, el PUT
+// del frontend falla con "Load failed" (CORS rejection en el browser).
+const FRONTEND_ORIGIN = 'https://alfredoaguado-arch.github.io';
 
 const CENTRAL_URL  = 'https://script.google.com/macros/s/AKfycbw8Ucc9J3_TQcsAR0tn2Lk5DBN2bPWG6HF2pm3GfoEwa2NlRFQn5qZPVj7gy-IaLBSg/exec';
 const FOLDER_ID    = '1izB-ldGeOlpX_TPn5BOgkSQ0osb4j9Nw';
@@ -681,7 +687,10 @@ function handleIniciarUploadPDF(data) {
         contentType: 'application/json',
         headers: {
           'Authorization': 'Bearer ' + ScriptApp.getOAuthToken(),
-          'X-Upload-Content-Type': 'application/pdf'
+          'X-Upload-Content-Type': 'application/pdf',
+          // v2.16: CRITICO para CORS. Sin Origin, la session URL devuelta no
+          // permite PUT desde el browser y el frontend recibe "Load failed".
+          'Origin': FRONTEND_ORIGIN
         },
         payload: JSON.stringify(metadata),
         muteHttpExceptions: true,
@@ -705,7 +714,17 @@ function handleIniciarUploadPDF(data) {
       return jsonResp({ ok: false, error: 'No Location header en respuesta de Drive' });
     }
 
-    return jsonResp({ ok: true, sessionUrl: sessionUrl, folio: folio });
+    // v2.16: diagnostico — incluir el Access-Control-Allow-Origin echoeado por
+    // Drive para confirmar que la session URL acepta CORS desde nuestro origin.
+    const corsOrigin = headers['Access-Control-Allow-Origin'] ||
+                       headers['access-control-allow-origin'] || '';
+
+    return jsonResp({
+      ok: true,
+      sessionUrl: sessionUrl,
+      folio: folio,
+      cors_origin: corsOrigin  // diagnostico, frontend puede loguearlo
+    });
   } catch (err) {
     return jsonResp({ ok: false, error: 'Error iniciando upload: ' + err.message });
   }
