@@ -1680,6 +1680,17 @@ async function generarOT() {
     _metrics.construir_pdf_qrs_ms   = Math.round(_qrAcumuladoMs);
     _metrics.construir_pdf_render_puro_ms = _metrics.construir_pdf_total_ms - _metrics.construir_pdf_qrs_ms;
 
+    // v2.17: re-set subject con firma_page (necesario para que pdf-lib localice
+    // la pagina de firmas al aprobar la OT). doc.getNumberOfPages() ya es definitivo.
+    const _firmaPage = doc.getNumberOfPages();
+    _metrics.firma_page = _firmaPage;
+    doc.setProperties({
+      title: 'OT - ' + folioReal,
+      subject: META_PREFIX + JSON.stringify(Object.assign({}, d, { firma_page: _firmaPage })),
+      keywords: 'CAMI OT ' + d.proyecto,
+      creator: 'CAMI Sistema'
+    });
+
     // 3. Descargar y anexar planos del item (una sola vez).
     const planos = Array.isArray(d.planos_del_lote) ? d.planos_del_lote : [];
     const _tDescarga0 = performance.now();
@@ -1937,8 +1948,15 @@ function abrirAprobarModal(idx) {
       </div>
     </div>
 
-    <div class="section-title" style="margin-top:16px;margin-bottom:8px">Firma de recepcion</div>
-    <p style="font-size:11px;color:#4A4A48">El responsable <strong>${escapeHtml(ot.responsable)}</strong> debe firmar su recepcion para aprobar la OT. Pasa el iPad para que firme.</p>
+    <div class="section-title" style="margin-top:16px;margin-bottom:8px">Receptor de la OT</div>
+    <p style="font-size:11px;color:#4A4A48">Escribe el nombre de la persona en campo que recibe la OT y luego pasale el iPad para que firme.</p>
+    <div style="margin-bottom:12px">
+      <input type="text" id="receptor-nombre" placeholder="Nombre completo de quien recibe la OT"
+             style="width:100%;padding:10px;border:1px solid #d3d1c7;border-radius:6px;font-family:'Courier New',monospace;font-size:13px"
+             autocomplete="off"/>
+    </div>
+
+    <div class="section-title" style="margin-bottom:8px">Firma del receptor</div>
     <div class="firma-wrap">
       <canvas id="firma-recepcion-aprob-canvas" class="firma-canvas" width="800" height="320"></canvas>
       <div class="firma-actions">
@@ -1965,37 +1983,150 @@ function cerrarAprobarModal() {
 async function confirmarAprobacion() {
   if (!_otEnAprobacion) return;
   // v2.14: ambas firmas son OBLIGATORIAS. Aprobar y recibir son el mismo acto.
-  // Sin las dos firmas (aprobador + responsable), no se puede aprobar la OT.
   if (firmaEstaVacia('firma-aprobar-canvas')) {
     showToast('Falta la firma del aprobador.', 'err'); return;
   }
   if (firmaEstaVacia('firma-recepcion-aprob-canvas')) {
-    showToast('Falta la firma de recepcion del responsable.', 'err'); return;
+    showToast('Falta la firma del receptor.', 'err'); return;
   }
+  // v2.17: receptor_nombre obligatorio (texto libre)
+  const receptorNombre = String(document.getElementById('receptor-nombre').value || '').trim();
+  if (!receptorNombre) { showToast('Falta el nombre del receptor.', 'err'); return; }
+
   const token = getToken(); if (!token) { abrirReloginModal(); return; }
   const firmaB64 = document.getElementById('firma-aprobar-canvas').toDataURL('image/png');
   const firmaRecepcionB64 = document.getElementById('firma-recepcion-aprob-canvas').toDataURL('image/png');
 
+  // v2.17 Fase 4: spinner durante todo el flujo (descarga + inyeccion + upload
+  // in-place + registro). Anti-doble-click: deshabilitar boton mientras corre.
+  const btnApr = document.querySelector('#aprobar-modal .btn-success');
+  if (btnApr) btnApr.disabled = true;
+  mostrarCargando('Preparando aprobacion...');
+
   try {
-    const r = await fetch(SCRIPT_URL, {
+    // 1. Extraer fileId del pdf_url de la OT.
+    const pdfUrl = String(_otEnAprobacion.pdf_url || '');
+    const m = pdfUrl.match(/\/file\/d\/([^\/\?]+)/);
+    if (!m) throw new Error('No se pudo extraer fileId del pdf_url');
+    const fileId = m[1];
+
+    // 2. Descargar bytes del PDF (descargarOT devuelve base64).
+    actualizarCargando('Descargando PDF...');
+    const respDl = await fetch(SCRIPT_URL, {
+      method: 'POST', headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({ action: 'descargarOT', token, fileId: fileId })
+    });
+    const resDl = await respDl.json();
+    if (!resDl.ok) {
+      if (/sesion/i.test(resDl.error || '')) { cerrarAprobarModal(); abrirReloginModal(); return; }
+      throw new Error('Descargar PDF: ' + (resDl.error || 'desconocido'));
+    }
+    const dlBin = atob(resDl.base64);
+    const pdfBytes = new Uint8Array(dlBin.length);
+    for (let i = 0; i < dlBin.length; i++) pdfBytes[i] = dlBin.charCodeAt(i);
+
+    // 3. Inyectar las dos firmas con pdf-lib.
+    actualizarCargando('Insertando firmas...');
+    const { PDFDocument } = PDFLib;
+    const pdfDoc = await PDFDocument.load(pdfBytes);
+
+    // Leer firma_page del subject (META_PREFIX + JSON). Fallback: pagina 2.
+    let firmaPage = 2;
+    const subject = pdfDoc.getSubject() || '';
+    if (subject.indexOf(META_PREFIX) === 0) {
+      try {
+        const meta = JSON.parse(subject.substring(META_PREFIX.length));
+        if (meta.firma_page) firmaPage = parseInt(meta.firma_page, 10);
+      } catch (e) {}
+    }
+    const pageIdx = firmaPage - 1;
+    if (pageIdx < 0 || pageIdx >= pdfDoc.getPageCount()) {
+      throw new Error('Pagina de firmas fuera de rango: ' + firmaPage);
+    }
+    const page = pdfDoc.getPage(pageIdx);
+
+    // Embed PNGs
+    const aprobB64Stripped = firmaB64.split(',')[1];
+    const recepB64Stripped = firmaRecepcionB64.split(',')[1];
+    const aprobBin = atob(aprobB64Stripped);
+    const recepBin = atob(recepB64Stripped);
+    const aprobBytes = new Uint8Array(aprobBin.length);
+    const recepBytes = new Uint8Array(recepBin.length);
+    for (let i = 0; i < aprobBin.length; i++) aprobBytes[i] = aprobBin.charCodeAt(i);
+    for (let i = 0; i < recepBin.length; i++) recepBytes[i] = recepBin.charCodeAt(i);
+    const aprobImg = await pdfDoc.embedPng(aprobBytes);
+    const recepImg = await pdfDoc.embedPng(recepBytes);
+
+    // Coordenadas — derivadas del layout de drawGridFirmas (mm) convertidas a pt.
+    // Layout: W=215.9mm, H=279.4mm, pL=14, gap=6, colW=58.633, boxH=32,
+    // alturaFirmas=92, padding interno 2mm c/lado.
+    //   zy = H - alturaFirmas = 187.4   (top fila 1)
+    //   row2 = zy + 48 = 235.4          (top fila 2)
+    //   cx[0]=14, cx[2]=143.267
+    // pdf-lib: Y crece hacia ARRIBA, opuesta a jsPDF (top-down).
+    const mmToPt = 2.83464567;
+    const pageHeightPt = page.getHeight();
+    // APROBADOR: row 1, col 2 → x=cx[2]+2=145.267, top=zy+2=189.4
+    const aprX = 145.267 * mmToPt;
+    const aprY = pageHeightPt - (189.4 + 28) * mmToPt;
+    // RECEPCION: row 2, col 0 → x=cx[0]+2=16, top=row2+2=237.4
+    const recX = 16 * mmToPt;
+    const recY = pageHeightPt - (237.4 + 28) * mmToPt;
+    const fwPt = (58.633 - 4) * mmToPt;
+    const fhPt = (32 - 4) * mmToPt;
+
+    page.drawImage(aprobImg, { x: aprX, y: aprY, width: fwPt, height: fhPt });
+    page.drawImage(recepImg, { x: recX, y: recY, width: fwPt, height: fhPt });
+
+    const updatedBytes = await pdfDoc.save();
+
+    // 4. Pedir sesion resumable IN-PLACE (PATCH al mismo fileId).
+    actualizarCargando('Preparando upload del PDF firmado...');
+    const respInit = await fetch(SCRIPT_URL, {
+      method: 'POST', headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({ action: 'iniciarActualizarPDF', token, file_id: fileId })
+    });
+    const resInit = await respInit.json();
+    if (!resInit.ok) {
+      if (/sesion/i.test(resInit.error || '')) { cerrarAprobarModal(); abrirReloginModal(); return; }
+      throw new Error('iniciarActualizarPDF: ' + (resInit.error || 'desconocido'));
+    }
+
+    // 5. PUT directo a Drive con los bytes actualizados.
+    actualizarCargando('Subiendo PDF firmado a Drive...');
+    const respPut = await fetch(resInit.sessionUrl, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/pdf' },
+      body: updatedBytes
+    });
+    if (!respPut.ok) throw new Error('PUT in-place fallo: HTTP ' + respPut.status);
+
+    // 6. Marcar APROBADA + guardar firmas en OT_FIRMAS.
+    actualizarCargando('Registrando aprobacion...');
+    const respApr = await fetch(SCRIPT_URL, {
       method: 'POST', headers: { 'Content-Type': 'text/plain' },
       body: JSON.stringify({
         action: 'aprobarOT', token, folio: _otEnAprobacion.folio,
         firma: firmaB64,
-        firma_recepcion: firmaRecepcionB64
+        firma_recepcion: firmaRecepcionB64,
+        receptor_nombre: receptorNombre
       })
     });
-    const data = await r.json();
-    if (!data.ok) {
-      if (/sesion/i.test(data.error || '')) { cerrarAprobarModal(); abrirReloginModal(); return; }
-      showToast('Error: ' + escapeHtml(data.error), 'err'); return;
+    const resApr = await respApr.json();
+    if (!resApr.ok) {
+      if (/sesion/i.test(resApr.error || '')) { cerrarAprobarModal(); abrirReloginModal(); return; }
+      throw new Error('aprobarOT: ' + resApr.error);
     }
+
     showToast('OT <b>' + escapeHtml(_otEnAprobacion.folio) + '</b> aprobada.', 'ok');
     cerrarAprobarModal();
     cargarPorAprobar();
     if (tieneApp(APP_KEY_CERRAR)) cargarPorCerrar();
   } catch (e) {
     showToast('Error: ' + escapeHtml(e.message), 'err');
+  } finally {
+    ocultarCargando();
+    if (btnApr) btnApr.disabled = false;
   }
 }
 
@@ -2497,7 +2628,7 @@ function construirPDF(doc, d, folio, estado, checklistSecciones, checklistRespue
     y += obsH + 6;
   }
 
-  // ── PAGINA 2: CHECKLIST + FIRMAS + SELLO
+  // ── PAGINA 2: CHECKLIST + FIRMAS (v2.17: el sello fisico se reemplazo por firma del aprobador)
   doc.addPage();
   drawHeaderSimple(doc, W, pL, pR, folio, 2);
   y = 22;
@@ -2625,8 +2756,11 @@ function drawInfoRow(doc, x, y, items) {
 }
 
 // Zona de firmas: grid uniforme 2x3 (6 celdas del mismo tamano).
-//   Fila 1: QR cierre | Firma cierre | Sello calidad
+//   Fila 1: QR cierre | Firma cierre | Firma del aprobador (v2.17)
 //   Fila 2: Recepcion | Entrega      | QR verificacion
+// v2.17: la caja "Sello calidad" se reasigno a "Firma del aprobador". Las firmas
+// de APROBACION (fila 1 col 2) y RECEPCION (fila 2 col 0) se inyectan al
+// aprobar la OT (no al crear) — vea generarOT y confirmarAprobacion.
 function drawGridFirmas(doc, x, y, cW, d, folio, firmasArr) {
   const gap  = 6;
   const colW = (cW - 2 * gap) / 3;   // ~58.6mm
@@ -2673,9 +2807,14 @@ function drawGridFirmas(doc, x, y, cW, d, folio, firmasArr) {
   }
   textoAbajo(1, y, cie ? cie.firmante : '________________', 'Supervisor');
 
-  celda(2, y, 'SELLO DE CALIDAD CAMI');
-  doc.setFont('helvetica', 'normal'); doc.setFontSize(7); doc.setTextColor(180, 180, 180);
-  doc.text('(sello fisico)', cx[2] + colW / 2, y + boxH / 2 + 1, { align: 'center' });
+  // v2.17: caja para firma del aprobador. Se inyecta al aprobar la OT via pdf-lib
+  // (no aqui con jsPDF). En creacion queda vacia.
+  const apr = (firmasArr && firmasArr.find) ? firmasArr.find(f => f.tipo === 'APROBACION') : null;
+  celda(2, y, 'FIRMA DEL APROBADOR');
+  if (apr && apr.imageB64) {
+    try { doc.addImage(apr.imageB64, 'PNG', cx[2] + 2, y + 2, colW - 4, boxH - 4, '', 'FAST'); } catch (e) {}
+  }
+  textoAbajo(2, y, apr ? apr.firmante : '________________', 'Firma al aprobar la OT');
 
   // ─── FILA 2 ───
   const rec = (firmasArr && firmasArr.find) ? firmasArr.find(f => f.tipo === 'RECEPCION') : null;

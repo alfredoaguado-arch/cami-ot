@@ -1,5 +1,5 @@
 // ================================================================
-// CAMI - Apps Script ORDENES DE TRABAJO v2.16
+// CAMI - Apps Script ORDENES DE TRABAJO v2.17
 // Bound al Sheet de OT (CAMI_OT_DB) - ID 12WU13Qp2DPXjaqAMuXg-yYYizuKqMU1K04v0nw0Ud7o
 //
 // REDISENIO COMPLETO vs v1.3:
@@ -48,7 +48,7 @@
 // Folder Drive Firmas:  (subcarpeta automatica dentro del folder de OT)
 // ================================================================
 
-const MODULE_VERSION = '2.16';
+const MODULE_VERSION = '2.17';
 
 // v2.16: Origin del frontend (PWA en GitHub Pages). Cuando handleIniciarUploadPDF
 // inicia la sesion resumable de Drive, debe enviar este Origin para que Drive
@@ -124,6 +124,7 @@ function doPost(e) {
     const accion = data.action || '';
     if (accion === 'reservarFolio')        return handleReservarFolio(data);
     if (accion === 'iniciarUploadPDF')     return handleIniciarUploadPDF(data);
+    if (accion === 'iniciarActualizarPDF') return handleIniciarActualizarPDF(data);
     if (accion === 'crearOT')              return handleCrearOT(data);
     if (accion === 'listarOTs')            return handleListarOTs(data);
     if (accion === 'descargarOT')          return handleDescargarOT(data);
@@ -730,6 +731,75 @@ function handleIniciarUploadPDF(data) {
   }
 }
 
+// ── ENDPOINT POST: INICIAR UPDATE RESUMABLE IN-PLACE (v2.17) ───
+// Sesion resumable para REEMPLAZAR el contenido de un PDF existente en Drive,
+// PRESERVANDO su fileId, sharing y description. Usado al aprobar: el frontend
+// descarga el PDF, inyecta las firmas con pdf-lib, y re-sube via esta session
+// URL. El QR del PDF (codifica el folio, lee col Q en runtime) sigue
+// funcionando porque el fileId no cambia.
+//
+// Drive REST: PATCH /upload/drive/v3/files/{fileId}?uploadType=resumable.
+// CORS preservado igual que iniciarUploadPDF (Origin obligatorio).
+function handleIniciarActualizarPDF(data) {
+  const auth = autenticarConApp(data.token, APP_KEY_APROBAR);
+  if (!auth.ok) return jsonResp(auth);
+
+  const fileId = String(data.file_id || '').trim();
+  if (!fileId) return jsonResp({ ok: false, error: 'file_id requerido' });
+
+  try {
+    // Defensa: el fileId debe pertenecer al arbol de OTs antes de mintear sesion.
+    const file = DriveApp.getFileById(fileId);
+    if (!_esDescendienteDeOT(file)) {
+      return jsonResp({ ok: false, error: 'file_id no pertenece al arbol de OTs' });
+    }
+
+    const resp = UrlFetchApp.fetch(
+      'https://www.googleapis.com/upload/drive/v3/files/' + encodeURIComponent(fileId) + '?uploadType=resumable',
+      {
+        method: 'patch',
+        contentType: 'application/json',
+        headers: {
+          'Authorization': 'Bearer ' + ScriptApp.getOAuthToken(),
+          'X-Upload-Content-Type': 'application/pdf',
+          'Origin': FRONTEND_ORIGIN
+        },
+        // Metadata vacia — solo actualizamos contenido binario, no nombre/parents.
+        payload: JSON.stringify({}),
+        muteHttpExceptions: true,
+        followRedirects: false
+      }
+    );
+
+    const code = resp.getResponseCode();
+    if (code !== 200) {
+      return jsonResp({
+        ok: false,
+        error: 'Drive rechazo update resumable (HTTP ' + code + '): ' +
+               String(resp.getContentText() || '').substring(0, 400)
+      });
+    }
+
+    const headers = resp.getHeaders();
+    const sessionUrl = headers['Location'] || headers['location'] || '';
+    if (!sessionUrl) {
+      return jsonResp({ ok: false, error: 'No Location header en respuesta de Drive' });
+    }
+
+    const corsOrigin = headers['Access-Control-Allow-Origin'] ||
+                       headers['access-control-allow-origin'] || '';
+
+    return jsonResp({
+      ok: true,
+      sessionUrl: sessionUrl,
+      file_id: fileId,
+      cors_origin: corsOrigin
+    });
+  } catch (err) {
+    return jsonResp({ ok: false, error: 'Error iniciando actualizar PDF: ' + err.message });
+  }
+}
+
 // ── ENDPOINT POST: CREAR OT ────────────────────────────────────
 
 function handleCrearOT(data) {
@@ -947,8 +1017,16 @@ function _recolectarPDFsDeCarpeta(folder, archivos) {
 }
 
 function handleDescargarOT(data) {
-  const auth = autenticarConApp(data.token, APP_KEY);
-  if (!auth.ok) return jsonResp(auth);
+  // v2.17: aceptar APP_KEY (creador) o APP_KEY_APROBAR (aprobador necesita
+  // descargar el PDF para inyectar firmas con pdf-lib al aprobar la OT).
+  const token = String(data.token || '').trim();
+  if (!token) return jsonResp({ ok: false, error: 'Sesion requerida' });
+  const usuario = validarTokenCentral(token);
+  if (!usuario) return jsonResp({ ok: false, error: 'Sesion invalida o expirada' });
+  const apps = usuario.apps || [];
+  if (apps.length && apps.indexOf(APP_KEY) === -1 && apps.indexOf(APP_KEY_APROBAR) === -1) {
+    return jsonResp({ ok: false, error: 'No tienes permiso para esta accion' });
+  }
 
   const fileId = String(data.fileId || '').trim();
   if (!fileId) return jsonResp({ ok: false, error: 'fileId requerido' });
@@ -991,12 +1069,17 @@ function handleAprobarOT(data) {
   const folio              = String(data.folio || '').trim();
   const firmaB64           = String(data.firma || '').trim();
   const firmaRecepcionB64  = String(data.firma_recepcion || '').trim();
+  // v2.17: receptor_nombre es TEXTO LIBRE escrito por el aprobador al aprobar.
+  // No es el usuario logueado ni el responsable de creacion — es la persona
+  // fisica que recibe la OT en campo (puede ser distinta a la del registro).
+  const receptorNombre     = String(data.receptor_nombre || '').trim();
   if (!folio)              return jsonResp({ ok: false, error: 'folio requerido' });
   if (!firmaB64)           return jsonResp({ ok: false, error: 'Firma del aprobador requerida' });
   // v2.14: la firma de recepcion del responsable es OBLIGATORIA. Aprobar y
   // recibir son el mismo acto: ambas personas (aprobador + responsable) firman
   // juntas en el iPad. Sin las dos firmas no se aprueba la OT.
   if (!firmaRecepcionB64)  return jsonResp({ ok: false, error: 'Firma de recepcion del responsable requerida' });
+  if (!receptorNombre)     return jsonResp({ ok: false, error: 'Nombre del receptor requerido' });
 
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(15000)) {
@@ -1016,9 +1099,9 @@ function handleAprobarOT(data) {
     const idFirma = guardarFirma(ss, folio, 'APROBACION', auth.usuario.nombre, firmaB64);
 
     // Guardar firma de recepcion (obligatoria — validada arriba).
-    // firmante = responsable de la fila OT (col E, idx 4).
-    const responsable = String(shOT.getRange(ubicado.fila, 5).getValue() || '').trim() || '(sin nombre)';
-    const idFirmaRecepcion = guardarFirma(ss, folio, 'RECEPCION', responsable, firmaRecepcionB64);
+    // v2.17: firmante = receptor_nombre (texto libre del aprobador), NO el
+    // responsable de creacion. El responsable original queda en col E intacto.
+    const idFirmaRecepcion = guardarFirma(ss, folio, 'RECEPCION', receptorNombre, firmaRecepcionB64);
 
     // Actualizar cabecera
     shOT.getRange(ubicado.fila, 11).setValue('APROBADA');
