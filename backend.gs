@@ -1,5 +1,5 @@
 // ================================================================
-// CAMI - Apps Script ORDENES DE TRABAJO v2.14
+// CAMI - Apps Script ORDENES DE TRABAJO v2.15
 // Bound al Sheet de OT (CAMI_OT_DB) - ID 12WU13Qp2DPXjaqAMuXg-yYYizuKqMU1K04v0nw0Ud7o
 //
 // REDISENIO COMPLETO vs v1.3:
@@ -48,7 +48,7 @@
 // Folder Drive Firmas:  (subcarpeta automatica dentro del folder de OT)
 // ================================================================
 
-const MODULE_VERSION = '2.14';
+const MODULE_VERSION = '2.15';
 
 const CENTRAL_URL  = 'https://script.google.com/macros/s/AKfycbw8Ucc9J3_TQcsAR0tn2Lk5DBN2bPWG6HF2pm3GfoEwa2NlRFQn5qZPVj7gy-IaLBSg/exec';
 const FOLDER_ID    = '1izB-ldGeOlpX_TPn5BOgkSQ0osb4j9Nw';
@@ -117,6 +117,7 @@ function doPost(e) {
     const data = JSON.parse(raw);
     const accion = data.action || '';
     if (accion === 'reservarFolio')        return handleReservarFolio(data);
+    if (accion === 'iniciarUploadPDF')     return handleIniciarUploadPDF(data);
     if (accion === 'crearOT')              return handleCrearOT(data);
     if (accion === 'listarOTs')            return handleListarOTs(data);
     if (accion === 'descargarOT')          return handleDescargarOT(data);
@@ -642,6 +643,74 @@ function handleReservarFolio(data) {
   }
 }
 
+// ── ENDPOINT POST: INICIAR UPLOAD RESUMABLE (v2.15) ────────────
+// El frontend pide una sesion de upload resumable de Drive para subir el PDF
+// DIRECTO a la CDN de Google sin pasar por Apps Script (cuello de botella de
+// ~82s con el flujo de base64 via doPost). Devuelve sessionUrl + folio; el
+// frontend hace PUT con los bytes del PDF a esa URL, recibe fileId de Drive,
+// y luego llama crearOT con file_id (en vez de pdf base64).
+//
+// Internals: usa UrlFetchApp directo al endpoint upload/drive/v3/files con el
+// OAuth token del script (ScriptApp.getOAuthToken). El scope drive ya esta
+// autorizado por el uso existente de DriveApp. NO requiere Advanced Drive Service.
+function handleIniciarUploadPDF(data) {
+  const auth = autenticarConApp(data.token, APP_KEY);
+  if (!auth.ok) return jsonResp(auth);
+
+  const folio    = String(data.folio || '').trim();
+  const proyecto = String(data.proyecto || '').trim();
+  const etapa    = String(data.etapa || '').trim();
+  if (!folio)    return jsonResp({ ok: false, error: 'folio requerido' });
+  if (!proyecto) return jsonResp({ ok: false, error: 'proyecto requerido' });
+  if (!etapa)    return jsonResp({ ok: false, error: 'etapa requerida' });
+
+  try {
+    const folder = obtenerCarpetaProyectoEtapa(proyecto, etapa);
+    const folderId = folder.getId();
+
+    const metadata = {
+      name: folio + '.pdf',
+      parents: [folderId],
+      mimeType: 'application/pdf'
+    };
+
+    const resp = UrlFetchApp.fetch(
+      'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable',
+      {
+        method: 'post',
+        contentType: 'application/json',
+        headers: {
+          'Authorization': 'Bearer ' + ScriptApp.getOAuthToken(),
+          'X-Upload-Content-Type': 'application/pdf'
+        },
+        payload: JSON.stringify(metadata),
+        muteHttpExceptions: true,
+        followRedirects: false
+      }
+    );
+
+    const code = resp.getResponseCode();
+    if (code !== 200) {
+      return jsonResp({
+        ok: false,
+        error: 'Drive rechazo init resumable (HTTP ' + code + '): ' +
+               String(resp.getContentText() || '').substring(0, 400)
+      });
+    }
+
+    const headers = resp.getHeaders();
+    // Drive devuelve Location con la session URL. Apps Script puede normalizar el case.
+    const sessionUrl = headers['Location'] || headers['location'] || '';
+    if (!sessionUrl) {
+      return jsonResp({ ok: false, error: 'No Location header en respuesta de Drive' });
+    }
+
+    return jsonResp({ ok: true, sessionUrl: sessionUrl, folio: folio });
+  } catch (err) {
+    return jsonResp({ ok: false, error: 'Error iniciando upload: ' + err.message });
+  }
+}
+
 // ── ENDPOINT POST: CREAR OT ────────────────────────────────────
 
 function handleCrearOT(data) {
@@ -759,39 +828,51 @@ function handleCrearOT(data) {
     }
 
     // 4. PDF en Drive
+    // v2.15: dos rutas posibles para asociar el PDF a la OT:
+    //   (a) file_id: el frontend ya subio el PDF directo a Drive via sesion
+    //       resumable (camino rapido, evita el cuello de ~82s del base64).
+    //   (b) pdf:     base64 que se decodea y crea aqui (camino legacy,
+    //       preservado por compatibilidad si el cliente aun no se actualizo).
     let pdfUrl = '';
-    if (pdfB64) {
+    const fileIdSubido = String(data.file_id || '').trim();
+    if (fileIdSubido) {
+      const file = DriveApp.getFileById(fileIdSubido);
+      // Defensa: el file debe estar bajo FOLDER_ID/<proyecto>/<etapa>/.
+      if (!_esDescendienteDeOT(file)) {
+        return jsonResp({ ok: false, error: 'file_id no esta en el arbol de OTs' });
+      }
+      file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+      const meta = {
+        folio: folio, fecha: fecha, proyecto: proyecto, etapa: etapa,
+        responsable: responsable, ot_interna: otInterna, entrega: entrega,
+        tiempo: tiempo, inspeccion: inspeccion, observaciones: observaciones,
+        materiales: materiales, usuario: usuario.nombre,
+        timestamp: new Date().toISOString()
+      };
+      file.setDescription(META_PREFIX + JSON.stringify(meta));
+      pdfUrl = 'https://drive.google.com/file/d/' + fileIdSubido + '/view';
+      shOT.getRange(filaOT, 17).setValue(pdfUrl);
+    } else if (pdfB64) {
+      // Legacy path: base64 viaja por doPost (lento). Mantenido por compat.
       const blob = Utilities.newBlob(
         Utilities.base64Decode(pdfB64),
         'application/pdf',
         folio + '.pdf'
       );
       // v2.12: el PDF se crea en FOLDER_ID/<proyecto>/<etapa>/ (arbol por proyecto+etapa).
-      // OTs viejas en raiz siguen funcionando: handleListarOTs itera ambos niveles y
-      // handleDescargarOT autoriza ancestros transitivos.
       const file = obtenerCarpetaProyectoEtapa(proyecto, etapa).createFile(blob);
       // v2.10: defense-in-depth. No depender de la herencia de sharing de la carpeta.
-      // El QR del PDF apunta a abrirPDF -> redirige a getUrl(), que requiere acceso publico.
       file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
       const meta = {
-        folio: folio,
-        fecha: fecha,
-        proyecto: proyecto,
-        etapa: etapa,
-        responsable: responsable,
-        ot_interna: otInterna,
-        entrega: entrega,
-        tiempo: tiempo,
-        inspeccion: inspeccion,
-        observaciones: observaciones,
-        materiales: materiales,
-        usuario: usuario.nombre,
+        folio: folio, fecha: fecha, proyecto: proyecto, etapa: etapa,
+        responsable: responsable, ot_interna: otInterna, entrega: entrega,
+        tiempo: tiempo, inspeccion: inspeccion, observaciones: observaciones,
+        materiales: materiales, usuario: usuario.nombre,
         timestamp: new Date().toISOString()
       };
       file.setDescription(META_PREFIX + JSON.stringify(meta));
       // v2.10.2: URL bare /view (sin ?usp=) es la unica forma confirmada que Drive abre
-      // para visitantes sin login. file.getUrl() retorna ?usp=drivesdk que Drive trata como
-      // peticion del SDK y rechaza el acceso publico.
+      // para visitantes sin login.
       pdfUrl = 'https://drive.google.com/file/d/' + file.getId() + '/view';
       shOT.getRange(filaOT, 17).setValue(pdfUrl);
     }

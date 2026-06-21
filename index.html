@@ -1689,24 +1689,62 @@ async function generarOT() {
     _metrics.descarga_planos_ms = Math.round(performance.now() - _tDescarga0);
     _metrics.planos_count = planos.length;
 
-    let pdfB64, blobLocal;
+    // v2.15: ya no se base64-encodea el PDF. Se mantienen los bytes crudos
+    // (Uint8Array) para PUT directo a Drive en el paso 5.
+    let pdfBytes, blobLocal;
     if (planosBytes.length) {
       actualizarCargando('Combinando PDF...');
       const _tMerge0 = performance.now();
-      const merged = await anexarPlanos(new Uint8Array(doc.output('arraybuffer')), planosBytes);
+      pdfBytes = await anexarPlanos(new Uint8Array(doc.output('arraybuffer')), planosBytes);
       _metrics.merge_pdf_lib_ms = Math.round(performance.now() - _tMerge0);
-      pdfB64 = bytesABase64(merged);
-      blobLocal = new Blob([merged], { type: 'application/pdf' });
+      blobLocal = new Blob([pdfBytes], { type: 'application/pdf' });
     } else {
       _metrics.merge_pdf_lib_ms = 0;
-      pdfB64 = doc.output('datauristring').split(',')[1];
-      blobLocal = doc.output('blob');
+      pdfBytes = new Uint8Array(doc.output('arraybuffer'));
+      blobLocal = new Blob([pdfBytes], { type: 'application/pdf' });
     }
+    _metrics.pdf_bytes = pdfBytes.byteLength;
 
-    // 4. Subir el PDF al backend con el folio reservado (activa el flujo nuevo).
-    actualizarCargando('Subiendo a Drive...');
+    // 4. v2.15: pedir sesion de upload resumable al backend (rapido, ~1-5s).
+    actualizarCargando('Preparando subida a Drive...');
     btn.textContent = 'Enviando...';
-    const _tUpload0 = performance.now();
+    const _tIniciar0 = performance.now();
+    const respInit = await fetch(SCRIPT_URL, {
+      method: 'POST', headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({
+        action: 'iniciarUploadPDF', token,
+        folio: folioReal, proyecto: d.proyecto, etapa: d.etapa
+      })
+    });
+    const resInit = await respInit.json();
+    _metrics.iniciar_upload_ms = Math.round(performance.now() - _tIniciar0);
+    if (!resInit.ok) {
+      if (/sesion/i.test(resInit.error || '')) { abrirReloginModal(); return; }
+      showToast('Error preparando upload: ' + escapeHtml(resInit.error || 'desconocido'), 'err');
+      return;
+    }
+    const sessionUrl = resInit.sessionUrl;
+
+    // 5. v2.15: PUT directo a Drive con los bytes del PDF. Bypassea Apps Script.
+    actualizarCargando('Subiendo a Drive...');
+    const _tDirect0 = performance.now();
+    const respPut = await fetch(sessionUrl, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/pdf' },
+      body: pdfBytes
+    });
+    _metrics.direct_upload_ms = Math.round(performance.now() - _tDirect0);
+    if (!respPut.ok) {
+      showToast('Error subiendo a Drive: HTTP ' + respPut.status, 'err');
+      return;
+    }
+    const driveResult = await respPut.json();
+    const fileId = driveResult.id;
+    _metrics.drive_file_id = fileId;
+
+    // 6. Llamar a crearOT con file_id (NO con pdf base64). Backend aplica sharing,
+    // setDescription con metadata, y escribe la fila del Sheet.
+    const _tCrearOT0 = performance.now();
     const resp = await fetch(SCRIPT_URL, {
       method: 'POST', headers: { 'Content-Type': 'text/plain' },
       body: JSON.stringify({
@@ -1714,12 +1752,12 @@ async function generarOT() {
         fecha: d.fecha, proyecto: d.proyecto, etapa: d.etapa, responsable: d.responsable,
         ot_interna: d.ot_interna, entrega: d.entrega, tiempo: d.tiempo,
         inspeccion: d.inspeccion, observaciones: d.observaciones,
-        materiales: d.materiales, pdf: pdfB64,
+        materiales: d.materiales, file_id: fileId,
         lote_marks: d.lote_marks || []
       })
     });
     const result = await resp.json();
-    _metrics.upload_backend_ms = Math.round(performance.now() - _tUpload0);
+    _metrics.crear_ot_meta_ms = Math.round(performance.now() - _tCrearOT0);
     _metrics.total_ms = Math.round(performance.now() - _tStart);
     console.log('[OT-METRICS]', JSON.stringify(_metrics));
     // TEMP: quitar tras medir. Alert en pantalla para capturar metricas en iPad sin DevTools.
