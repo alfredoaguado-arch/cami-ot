@@ -2986,11 +2986,13 @@ function generarQR(text) {
 // salto a Safari + re-login que sufrió el flow de QR escaneado con la
 // cámara nativa. Usa @zxing/browser (misma lib que cami-almacen).
 let _qrScannerCerrar = null;
+let _qrYaProcesadoCerrar = false;   // guard contra doble disparo del callback de zxing
 function abrirScannerCerrar() {
   if (!tieneApp(APP_KEY_CERRAR)) {
     showToast('No tienes permiso para cerrar OTs.', 'err');
     return;
   }
+  _qrYaProcesadoCerrar = false;
   document.getElementById('qr-status-cerrar').textContent = 'Iniciando cámara...';
   document.getElementById('qr-overlay-cerrar').classList.add('show');
   setTimeout(iniciarScannerCerrar, 250);
@@ -3006,11 +3008,15 @@ async function iniciarScannerCerrar() {
     const videoEl = document.getElementById('qr-video-cerrar');
     document.getElementById('qr-status-cerrar').textContent = 'Buscando código QR...';
     await codeReader.decodeFromVideoDevice(null, videoEl, function(res, err) {
-      if (res) {
-        const texto = res.getText();
-        cerrarScannerCerrar();
-        procesarQRcerrar(texto);
-      }
+      // Guard: reset() de zxing no detiene el callback inmediatamente — los
+      // 2-3 frames siguientes pueden entrar antes de que el reader pare. Sin
+      // el flag, cada frame relanza rutearHash → mostrarCargando + cargarPorCerrar
+      // + mostrarAvisoModal en loop, atrapando al usuario sin poder cerrar el aviso.
+      if (!res || _qrYaProcesadoCerrar) return;
+      _qrYaProcesadoCerrar = true;
+      const texto = res.getText();
+      cerrarScannerCerrar();
+      procesarQRcerrar(texto);
     });
   } catch (e) {
     const msg = (e && e.message) ? e.message : String(e);
