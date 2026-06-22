@@ -4,11 +4,14 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>CAMI — Orden de Trabajo</title>
-<!-- v2.20 (2026-06-21): theme central CAMI (navy + naranja + papel + Sora/DM Sans).
+<!-- v2.21 (2026-06-22): scanner QR integrado en pestaña Cerrar — evita
+     re-login en Safari cuando se escanea el QR de cierre de papel.
+     v2.20 (2026-06-21): theme central CAMI (navy + naranja + papel + Sora/DM Sans).
      Hosted en cami-app2/theme/v1.css. -->
 <link rel="stylesheet" href="https://alfredoaguado-arch.github.io/cami-app2/theme/v1.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@zxing/browser@0.1.1/umd/index.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/signature_pad@4.1.7/dist/signature_pad.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
@@ -159,6 +162,24 @@ textarea{resize:vertical;min-height:60px}
 .firma-actions button:hover{background:var(--cami-paper)}
 
 @media(max-width:580px){.form-body{padding:1rem}.grid2,.grid3{grid-template-columns:1fr}.btn-row{flex-direction:column}.masthead{padding:12px 1rem}.user-bar{padding:8px 1rem}.tabs{padding:0}.tab{padding:10px 12px;font-size:11px}.detail-grid{grid-template-columns:1fr 1fr}}
+
+/* ── QR Scanner integrado (v2.21) ─────────────────────────────────── */
+.btn-scan-cerrar{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;padding:16px 18px;background:var(--cami-orange);color:#fff;border:none;border-radius:var(--cami-radius);font-family:var(--cami-font-display);font-size:14px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;cursor:pointer;margin-bottom:14px;transition:background .15s;box-shadow:var(--cami-shadow-sm)}
+.btn-scan-cerrar:hover{background:var(--cami-orange-mid)}
+.btn-scan-cerrar:active{background:var(--cami-prima-red)}
+.btn-scan-cerrar svg{flex-shrink:0}
+.qr-overlay{display:none;position:fixed;inset:0;background:rgba(25,39,46,.94);z-index:1500;flex-direction:column;align-items:center;justify-content:center;padding:1rem}
+.qr-overlay.show{display:flex}
+.qr-box{background:var(--cami-navy);border-radius:var(--cami-radius-lg);padding:22px;width:100%;max-width:380px;display:flex;flex-direction:column;align-items:center;gap:14px;position:relative;overflow:hidden}
+.qr-box::after{content:'';position:absolute;left:0;right:0;bottom:0;height:3px;background:var(--cami-fusion-grad-3)}
+.qr-video-wrap{position:relative;width:100%;border-radius:var(--cami-radius-sm);overflow:hidden;background:#000;aspect-ratio:1}
+.qr-video-wrap video{width:100%;height:100%;display:block;object-fit:cover}
+.qr-frame{position:absolute;inset:18%;border:2px solid var(--cami-orange);border-radius:var(--cami-radius-sm);pointer-events:none;box-shadow:0 0 0 9999px rgba(0,0,0,.35)}
+.qr-label{font-family:var(--cami-font-display);font-size:11px;font-weight:600;color:var(--cami-paper-on-navy);text-align:center;letter-spacing:.12em;text-transform:uppercase;line-height:1.5}
+.qr-label.title{font-size:13px;color:var(--cami-paper);letter-spacing:.06em}
+.qr-close{background:rgba(250,246,238,.08);color:var(--cami-paper);border:1px solid rgba(248,200,168,.22);border-radius:var(--cami-radius);padding:11px 22px;cursor:pointer;font-family:var(--cami-font-display);font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;transition:background .15s;width:100%}
+.qr-close:hover{background:rgba(243,121,51,.18)}
+.qr-close:active{background:var(--cami-orange);border-color:var(--cami-orange)}
 </style>
 </head>
 <body class="cami-themed">
@@ -361,6 +382,10 @@ textarea{resize:vertical;min-height:60px}
   <!-- ── PESTAÑA: CERRAR ── -->
   <div class="tab-content" id="content-cerrar">
     <div class="form-body">
+      <button class="btn-scan-cerrar" onclick="abrirScannerCerrar()">
+        <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4m0 1a1 1 0 0 1 1 -1h2a1 1 0 0 1 1 1v2a1 1 0 0 1 -1 1h-2a1 1 0 0 1 -1 -1z"/><path d="M4 16m0 1a1 1 0 0 1 1 -1h2a1 1 0 0 1 1 1v2a1 1 0 0 1 -1 1h-2a1 1 0 0 1 -1 -1z"/><path d="M16 4m0 1a1 1 0 0 1 1 -1h2a1 1 0 0 1 1 1v2a1 1 0 0 1 -1 1h-2a1 1 0 0 1 -1 -1z"/><path d="M4 12l4 0"/><path d="M12 4l0 4"/><path d="M20 12l-6 0"/><path d="M12 16l0 .01"/><path d="M16 12l4 0"/><path d="M20 16l0 4l-4 0"/><path d="M12 20l-4 0"/></svg>
+        Escanear OT a cerrar
+      </button>
       <div class="section-title" style="margin-bottom:1rem">
         <span>OT por Cerrar</span>
         <button class="btn-add-item" onclick="cargarPorCerrar()">↻ Refrescar</button>
@@ -368,6 +393,16 @@ textarea{resize:vertical;min-height:60px}
       <div id="lista-cerrar"><div class="lista-vacia">Cargando...</div></div>
       <div class="toast" id="toast-cerrar"></div>
     </div>
+  </div>
+</div>
+
+<!-- QR Scanner Overlay (v2.21) -->
+<div class="qr-overlay" id="qr-overlay-cerrar">
+  <div class="qr-box">
+    <div class="qr-label title">Apunta al QR de cierre en el papel de la OT</div>
+    <div class="qr-video-wrap"><video id="qr-video-cerrar" autoplay muted playsinline></video><div class="qr-frame"></div></div>
+    <div class="qr-label" id="qr-status-cerrar">Iniciando cámara...</div>
+    <button class="qr-close" onclick="cerrarScannerCerrar()">Cancelar</button>
   </div>
 </div>
 
@@ -2942,6 +2977,69 @@ function generarQR(text) {
     if (tempDiv.parentNode) document.body.removeChild(tempDiv);
     _qrAcumuladoMs += performance.now() - _qrT0;
     throw e;
+  }
+}
+
+// ── QR SCANNER PARA CIERRE (v2.21) ────────────────────────────
+// El supervisor abre la PWA (ya autenticado), tap "Escanear OT a cerrar",
+// apunta al QR del papel, y el modal de cierre abre directo. Evita el
+// salto a Safari + re-login que sufrió el flow de QR escaneado con la
+// cámara nativa. Usa @zxing/browser (misma lib que cami-almacen).
+let _qrScannerCerrar = null;
+function abrirScannerCerrar() {
+  if (!tieneApp(APP_KEY_CERRAR)) {
+    showToast('No tienes permiso para cerrar OTs.', 'err');
+    return;
+  }
+  document.getElementById('qr-status-cerrar').textContent = 'Iniciando cámara...';
+  document.getElementById('qr-overlay-cerrar').classList.add('show');
+  setTimeout(iniciarScannerCerrar, 250);
+}
+async function iniciarScannerCerrar() {
+  try {
+    if (typeof ZXingBrowser === 'undefined') {
+      document.getElementById('qr-status-cerrar').textContent = 'Lector no disponible.';
+      return;
+    }
+    const codeReader = new ZXingBrowser.BrowserQRCodeReader(null, { delayBetweenScanAttempts: 300 });
+    _qrScannerCerrar = codeReader;
+    const videoEl = document.getElementById('qr-video-cerrar');
+    document.getElementById('qr-status-cerrar').textContent = 'Buscando código QR...';
+    await codeReader.decodeFromVideoDevice(null, videoEl, function(res, err) {
+      if (res) {
+        const texto = res.getText();
+        cerrarScannerCerrar();
+        procesarQRcerrar(texto);
+      }
+    });
+  } catch (e) {
+    const msg = (e && e.message) ? e.message : String(e);
+    document.getElementById('qr-status-cerrar').textContent = 'Error: ' + msg;
+  }
+}
+function cerrarScannerCerrar() {
+  if (_qrScannerCerrar) { try { _qrScannerCerrar.reset(); } catch (e) {} _qrScannerCerrar = null; }
+  const v = document.getElementById('qr-video-cerrar');
+  if (v && v.srcObject) {
+    try { v.srcObject.getTracks().forEach(function(t) { t.stop(); }); } catch (e) {}
+    v.srcObject = null;
+  }
+  document.getElementById('qr-overlay-cerrar').classList.remove('show');
+}
+function procesarQRcerrar(texto) {
+  // El QR codifica: https://alfredoaguado-arch.github.io/cami-ot/#cerrar/<folio>
+  // Aceptar también casos legacy donde el QR solo trae #cerrar/<folio>.
+  const m = String(texto || '').match(/#cerrar\/([^\s?&#]+)$/);
+  if (!m) {
+    showToast('QR no reconocido. No corresponde a un cierre de OT.', 'err');
+    return;
+  }
+  const hashNuevo = '#cerrar/' + m[1];
+  // Si ya estamos en ese hash, hashchange no se dispara — llamar manual.
+  if (location.hash === hashNuevo) {
+    rutearHash();
+  } else {
+    location.hash = hashNuevo;
   }
 }
 
