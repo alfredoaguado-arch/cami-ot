@@ -48,7 +48,16 @@
 // Folder Drive Firmas:  (subcarpeta automatica dentro del folder de OT)
 // ================================================================
 
-const MODULE_VERSION = '2.19';
+const MODULE_VERSION = '2.20';
+// v2.20 (2026-06-23): titulo_actividad persistido como columna 19 (TRAILING).
+//                     Cambio aditivo: filas viejas la dejan vacía, ningún
+//                     índice hardcodeado (rowsOT[i][N]) se rompe. El front
+//                     captura el campo desde antes y lo grababa solo en el
+//                     metadata del PDF; ahora también vive en la hoja, por
+//                     lo que las listas (listarPorAprobar/Cerrar) lo
+//                     devuelven y se puede mostrar como subtítulo + filtrar.
+//                     Para activar: pegar backend, deploy New version,
+//                     correr asegurarColumnaTitulo() UNA vez desde el editor.
 
 // v2.16: Origin del frontend (PWA en GitHub Pages). Cuando handleIniciarUploadPDF
 // inicia la sesion resumable de Drive, debe enviar este Origin para que Drive
@@ -639,7 +648,8 @@ function handleReservarFolio(data) {
       '',                  // O cerrado_por
       '',                  // P fecha_cierre
       '',                  // Q pdf_url (vacio = aun no subido)
-      new Date()           // R timestamp
+      new Date(),          // R timestamp
+      ''                   // S titulo_actividad (v2.20; se llena en handleCrearOT)
     ]);
     appendLog(ss, folio, 'RESERVADA', auth.usuario.nombre, '');
     return jsonResp({ ok: true, folio: folio });
@@ -834,6 +844,9 @@ function handleCrearOT(data) {
   const tiempo      = String(data.tiempo || '').trim();
   const inspeccion  = String(data.inspeccion || '').trim();
   const observaciones = String(data.observaciones || '').trim();
+  // v2.20: titulo de actividad (col 19). Tope 200 chars (el input front limita a
+  // 120; margen para futuros formatos sin reventar la celda). NO obligatorio.
+  const tituloActividad = String(data.titulo_actividad || '').trim().slice(0, 200);
   const materiales  = Array.isArray(data.materiales) ? data.materiales : [];
   const pdfB64      = String(data.pdf || '').trim();
 
@@ -874,13 +887,14 @@ function handleCrearOT(data) {
       shOT.getRange(filaOT, 12).setValue(usuario.nombre);  // L creado_por
       shOT.getRange(filaOT, 13).setValue(aprobadoPorAuto); // M aprobado_por
       shOT.getRange(filaOT, 14).setValue(fechaAprobAuto);  // N fecha_aprob
+      shOT.getRange(filaOT, 19).setValue(tituloActividad); // S titulo_actividad (v2.20)
     } else {
       // Flujo legacy (compatibilidad): genera folio e inserta la fila.
       folio = generarFolio(ss, proyecto, fecha, etapa);
       shOT.appendRow([
         folio, new Date(fecha), proyecto, etapa, responsable, otInterna, entrega, tiempo,
         inspeccion, observaciones, estadoInicial, usuario.nombre, aprobadoPorAuto, fechaAprobAuto,
-        '', '', '', new Date()
+        '', '', '', new Date(), tituloActividad
       ]);
       filaOT = shOT.getLastRow();
     }
@@ -1329,25 +1343,26 @@ function leerOTsConDetalle(ss, filtroEstado) {
     const estado = String(rowsOT[i][10] || '');
     if (!filtroEstado(estado)) continue;
     ots.push({
-      folio:        folio,
-      fecha:        rowsOT[i][1] ? new Date(rowsOT[i][1]).toISOString() : '',
-      proyecto:     rowsOT[i][2],
-      etapa:        rowsOT[i][3],
-      responsable:  rowsOT[i][4],
-      ot_interna:   rowsOT[i][5],
-      entrega:      rowsOT[i][6] ? new Date(rowsOT[i][6]).toISOString() : '',
-      tiempo:       rowsOT[i][7],
-      inspeccion:   rowsOT[i][8],
-      observaciones:rowsOT[i][9],
-      estado:       estado,
-      creado_por:   rowsOT[i][11],
-      aprobado_por: rowsOT[i][12],
-      fecha_aprob:  rowsOT[i][13] ? new Date(rowsOT[i][13]).toISOString() : '',
-      cerrado_por:  rowsOT[i][14],
-      fecha_cierre: rowsOT[i][15] ? new Date(rowsOT[i][15]).toISOString() : '',
-      pdf_url:      rowsOT[i][16],
-      materiales:   matsPorOT[folio] || [],
-      firmas:       firmasPorOT[folio] || []
+      folio:            folio,
+      fecha:            rowsOT[i][1] ? new Date(rowsOT[i][1]).toISOString() : '',
+      proyecto:         rowsOT[i][2],
+      etapa:            rowsOT[i][3],
+      responsable:      rowsOT[i][4],
+      ot_interna:       rowsOT[i][5],
+      entrega:          rowsOT[i][6] ? new Date(rowsOT[i][6]).toISOString() : '',
+      tiempo:           rowsOT[i][7],
+      inspeccion:       rowsOT[i][8],
+      observaciones:    rowsOT[i][9],
+      estado:           estado,
+      creado_por:       rowsOT[i][11],
+      aprobado_por:     rowsOT[i][12],
+      fecha_aprob:      rowsOT[i][13] ? new Date(rowsOT[i][13]).toISOString() : '',
+      cerrado_por:      rowsOT[i][14],
+      fecha_cierre:     rowsOT[i][15] ? new Date(rowsOT[i][15]).toISOString() : '',
+      pdf_url:          rowsOT[i][16],
+      titulo_actividad: String(rowsOT[i][18] || ''),   // v2.20 — col S; OT viejas devuelven ''
+      materiales:       matsPorOT[folio] || [],
+      firmas:           firmasPorOT[folio] || []
     });
   }
   ots.sort(function(a, b) { return (a.fecha || '').localeCompare(b.fecha || ''); });
@@ -1574,4 +1589,24 @@ function testListaComposicionHarrison() {
 }
 function testListaPlanosHarrison() {
   Logger.log(handleListaPlanosPorProyecto('HARRISON-OWOW').getContent());
+}
+
+// v2.20: helper idempotente para asegurar el header de la columna trailing
+// 'titulo_actividad' (col S = 19) en la hoja OT. Correr una vez desde el editor
+// tras el deploy. Si la celda S1 ya tiene texto, no la pisa — registra el log.
+// Las filas viejas mantienen S vacío; las nuevas (post-deploy) lo llenan via
+// handleReservarFolio + handleCrearOT.
+function asegurarColumnaTitulo() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName(H_OT);
+  if (!sh) { Logger.log('Hoja OT no encontrada'); return; }
+  const actual = String(sh.getRange(1, 19).getValue() || '').trim();
+  if (!actual) {
+    sh.getRange(1, 19).setValue('titulo_actividad');
+    Logger.log('Columna 19 (S) sembrada con header "titulo_actividad"');
+  } else if (actual === 'titulo_actividad') {
+    Logger.log('Columna 19 ya estaba con header correcto — no se toca');
+  } else {
+    Logger.log('Columna 19 ya tiene otro valor: ' + JSON.stringify(actual) + ' — NO se sobrescribe. Revisar a mano.');
+  }
 }
