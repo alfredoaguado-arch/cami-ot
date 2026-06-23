@@ -89,7 +89,14 @@ textarea{resize:vertical;min-height:60px}
 .req-card:hover{background:#fff;border-color:var(--cami-orange);box-shadow:var(--cami-shadow-sm)}
 .req-card-row{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
 .req-card .folio{font-family:var(--cami-font-display);font-weight:700;color:var(--cami-navy);font-size:14px;letter-spacing:.02em}
+/* v2.20: subtitulo con el titulo de actividad debajo del folio. Discreto, no compite con el folio. */
+.req-card .subtitulo-actividad{font-family:var(--cami-font-body);font-size:11.5px;color:var(--cami-ink-soft);margin-top:2px;font-style:italic;line-height:1.3;display:block}
 .req-card .meta{font-family:var(--cami-font-body);font-size:12px;color:var(--cami-ink-soft);display:flex;gap:14px;flex-wrap:wrap;margin-top:4px}
+/* v2.20: buscador de las listas (Aprobar/Cerrar) — filtra por folio + proyecto + titulo. */
+.lista-search{display:block;width:100%;padding:8px 12px;border:1px solid var(--cami-rule);border-radius:var(--cami-radius-sm);font-family:var(--cami-font-body);font-size:13px;margin-bottom:10px;background:#fff}
+.lista-search:focus{outline:none;border-color:var(--cami-orange)}
+/* v2.20: titulo de actividad en el HEADER del modal (debajo del folio). */
+.modal-header .subtitulo-modal{display:block;font-family:var(--cami-font-body);font-weight:400;font-size:12px;color:var(--cami-ink-soft);margin-top:2px;font-style:italic;line-height:1.3}
 
 .estado-badge{display:inline-block;padding:3px 10px;border-radius:var(--cami-radius-sm);font-family:var(--cami-font-display);font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase}
 .e-borrador{background:var(--cami-gray-bg);color:var(--cami-ink-soft)}
@@ -374,6 +381,9 @@ textarea{resize:vertical;min-height:60px}
         <span>OT por Aprobar</span>
         <button class="btn-add-item" onclick="cargarPorAprobar()">↻ Refrescar</button>
       </div>
+      <input type="text" id="busqueda-aprobar" class="lista-search"
+             placeholder="Buscar por folio, proyecto, etapa, responsable o titulo..."
+             oninput="renderListaAprobar()" autocomplete="off"/>
       <div id="lista-aprobar"><div class="lista-vacia">Cargando...</div></div>
       <div class="toast" id="toast-aprobar"></div>
     </div>
@@ -390,6 +400,9 @@ textarea{resize:vertical;min-height:60px}
         <span>OT por Cerrar</span>
         <button class="btn-add-item" onclick="cargarPorCerrar()">↻ Refrescar</button>
       </div>
+      <input type="text" id="busqueda-cerrar" class="lista-search"
+             placeholder="Buscar por folio, proyecto, etapa, responsable o titulo..."
+             oninput="renderListaCerrar()" autocomplete="off"/>
       <div id="lista-cerrar"><div class="lista-vacia">Cargando...</div></div>
       <div class="toast" id="toast-cerrar"></div>
     </div>
@@ -441,7 +454,10 @@ textarea{resize:vertical;min-height:60px}
 <div id="aprobar-modal" class="modal-overlay">
   <div class="modal-box large">
     <div class="modal-header">
-      <strong id="aprobar-modal-folio">OT-XXX</strong>
+      <div style="flex:1;min-width:0">
+        <strong id="aprobar-modal-folio">OT-XXX</strong>
+        <span id="aprobar-modal-titulo" class="subtitulo-modal" style="display:none"></span>
+      </div>
       <button onclick="cerrarAprobarModal()">&times;</button>
     </div>
     <div class="modal-body" id="aprobar-modal-body"></div>
@@ -452,7 +468,10 @@ textarea{resize:vertical;min-height:60px}
 <div id="cerrar-modal" class="modal-overlay">
   <div class="modal-box large">
     <div class="modal-header">
-      <strong id="cerrar-modal-folio">OT-XXX</strong>
+      <div style="flex:1;min-width:0">
+        <strong id="cerrar-modal-folio">OT-XXX</strong>
+        <span id="cerrar-modal-titulo" class="subtitulo-modal" style="display:none"></span>
+      </div>
       <button onclick="cerrarCerrarModal()">&times;</button>
     </div>
     <div class="modal-body" id="cerrar-modal-body"></div>
@@ -1828,7 +1847,8 @@ async function generarOT() {
         ot_interna: d.ot_interna, entrega: d.entrega, tiempo: d.tiempo,
         inspeccion: d.inspeccion, observaciones: d.observaciones,
         materiales: d.materiales, file_id: fileId,
-        lote_marks: d.lote_marks || []
+        lote_marks: d.lote_marks || [],
+        titulo_actividad: d.titulo_actividad || ''   // v2.20: persiste en col 19 de la hoja OT
       })
     });
     const result = await resp.json();
@@ -1956,14 +1976,36 @@ function actualizarBadge(tipo, n) {
   const badge = document.getElementById('badge-' + tipo);
   if (n > 0) { badge.textContent = n; badge.style.display = ''; } else { badge.style.display = 'none'; }
 }
+// v2.20: helper común — filtra el cache por folio, proyecto, etapa, responsable
+// O titulo_actividad. Búsqueda case-insensitive y sin acentos (NFD-strip).
+// Como las listas son chicas (10-20 OT) el match lineal es trivial.
+function _normCmp(s){ return String(s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,''); }
+function _filtrarOTs(cache, q){
+  const t=_normCmp(q).trim(); if(!t) return cache;
+  return cache.filter(ot=>{
+    return _normCmp(ot.folio).includes(t)
+        || _normCmp(ot.proyecto).includes(t)
+        || _normCmp(ot.etapa).includes(t)
+        || _normCmp(ot.responsable).includes(t)
+        || _normCmp(ot.titulo_actividad).includes(t);
+  });
+}
 function renderListaAprobar() {
   const cont = document.getElementById('lista-aprobar');
   if (!_aprobarCache.length) { cont.innerHTML = '<div class="lista-vacia">No hay OT por aprobar. ✓</div>'; return; }
-  cont.innerHTML = _aprobarCache.map((ot, idx) => `
-    <div class="req-card" onclick="abrirAprobarModal(${idx})">
+  const q = (document.getElementById('busqueda-aprobar')||{}).value || '';
+  const filtradas = _filtrarOTs(_aprobarCache, q);
+  if (!filtradas.length) { cont.innerHTML = '<div class="lista-vacia">Sin resultados para "' + escapeHtml(q) + '"</div>'; return; }
+  cont.innerHTML = filtradas.map(ot => {
+    // El index real en _aprobarCache (no en filtradas) — para que abrirAprobarModal abra el correcto.
+    const realIdx = _aprobarCache.indexOf(ot);
+    const tit = ot.titulo_actividad ? `<div class="subtitulo-actividad">${escapeHtml(ot.titulo_actividad)}</div>` : '';
+    return `
+    <div class="req-card" onclick="abrirAprobarModal(${realIdx})">
       <div class="req-card-row">
         <div style="flex:1;min-width:200px">
           <div class="folio">${escapeHtml(ot.folio)}</div>
+          ${tit}
           <div class="meta">
             <span><b>${escapeHtml(ot.proyecto)}</b></span>
             <span>${escapeHtml(ot.etapa)}</span>
@@ -1973,13 +2015,18 @@ function renderListaAprobar() {
         </div>
         <span class="estado-badge e-pendiente_aprobacion">Pendiente</span>
       </div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 }
 
 function abrirAprobarModal(idx) {
   const ot = _aprobarCache[idx]; if (!ot) return;
   _otEnAprobacion = ot;
   document.getElementById('aprobar-modal-folio').textContent = ot.folio;
+  // v2.20: titulo de actividad en el header del modal (vacio = ocultar).
+  const elTit = document.getElementById('aprobar-modal-titulo');
+  if (ot.titulo_actividad) { elTit.textContent = ot.titulo_actividad; elTit.style.display = ''; }
+  else                     { elTit.textContent = ''; elTit.style.display = 'none'; }
   const body = document.getElementById('aprobar-modal-body');
   const matsHtml = ot.materiales && ot.materiales.length
     ? `<table class="mats-table"><thead><tr><th>Descripcion</th><th>Cant</th><th>Unidad</th></tr></thead><tbody>` +
@@ -2288,13 +2335,19 @@ async function cargarPorCerrar() {
 function renderListaCerrar() {
   const cont = document.getElementById('lista-cerrar');
   if (!_cerrarCache.length) { cont.innerHTML = '<div class="lista-vacia">No hay OT por cerrar. ✓</div>'; return; }
-  cont.innerHTML = _cerrarCache.map((ot, idx) => {
+  const q = (document.getElementById('busqueda-cerrar')||{}).value || '';
+  const filtradas = _filtrarOTs(_cerrarCache, q);
+  if (!filtradas.length) { cont.innerHTML = '<div class="lista-vacia">Sin resultados para "' + escapeHtml(q) + '"</div>'; return; }
+  cont.innerHTML = filtradas.map(ot => {
+    const realIdx = _cerrarCache.indexOf(ot);
     const cls = ot.estado === 'EN_PROCESO' ? 'e-en_proceso' : 'e-aprobada';
+    const tit = ot.titulo_actividad ? `<div class="subtitulo-actividad">${escapeHtml(ot.titulo_actividad)}</div>` : '';
     return `
-      <div class="req-card" onclick="abrirCerrarModal(${idx})">
+      <div class="req-card" onclick="abrirCerrarModal(${realIdx})">
         <div class="req-card-row">
           <div style="flex:1;min-width:200px">
             <div class="folio">${escapeHtml(ot.folio)}</div>
+            ${tit}
             <div class="meta">
               <span><b>${escapeHtml(ot.proyecto)}</b></span>
               <span>${escapeHtml(ot.etapa)}</span>
@@ -2312,6 +2365,10 @@ async function abrirCerrarModal(idx) {
   const ot = _cerrarCache[idx]; if (!ot) return;
   _otEnCierre = ot;
   document.getElementById('cerrar-modal-folio').textContent = ot.folio;
+  // v2.20: titulo de actividad en el header del modal (vacio = ocultar).
+  const elTitC = document.getElementById('cerrar-modal-titulo');
+  if (ot.titulo_actividad) { elTitC.textContent = ot.titulo_actividad; elTitC.style.display = ''; }
+  else                     { elTitC.textContent = ''; elTitC.style.display = 'none'; }
   const body = document.getElementById('cerrar-modal-body');
   body.innerHTML = '<div style="padding:1rem;text-align:center;color:#888780">Cargando checklist...</div>';
   document.getElementById('cerrar-modal').classList.add('show');
