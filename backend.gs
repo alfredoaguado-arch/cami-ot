@@ -1,5 +1,5 @@
 // ================================================================
-// CAMI - Apps Script ORDENES DE TRABAJO v2.20
+// CAMI - Apps Script ORDENES DE TRABAJO v2.22
 // Bound al Sheet de OT (CAMI_OT_DB) - ID 12WU13Qp2DPXjaqAMuXg-yYYizuKqMU1K04v0nw0Ud7o
 //
 // REDISENIO COMPLETO vs v1.3:
@@ -48,7 +48,22 @@
 // Folder Drive Firmas:  (subcarpeta automatica dentro del folder de OT)
 // ================================================================
 
-const MODULE_VERSION = '2.20';
+const MODULE_VERSION = '2.22';
+// v2.22 (2026-06-23): endpoint NUEVO prechequeoMarks — validacion anti-duplicado
+//                     de marks por mark+etapa+volumen. SOLO LECTURA: no escribe
+//                     ninguna hoja, no toca el flujo de creacion existente. Por
+//                     cada mark de una OT nueva suma el volumen ya COMPROMETIDO
+//                     en la MISMA etapa (Σ OT_LOTE_MARKS.qty unido por folio a la
+//                     cabecera OT, contando SOLO estados activos
+//                     {PENDIENTE_APROBACION, APROBADA, EN_PROCESO, COMPLETADA} —
+//                     EXCLUYE RECHAZADA y reservadas 'PENDIENTE'/'BORRADOR', cuyas
+//                     filas de lote persisten) y lo compara contra el volumen
+//                     TOTAL (Σ CAT_COMPOSICION.qty por componente). Veredicto por
+//                     mark: ok | advertencia (supera total pero queda saldo) |
+//                     bloqueo (ya 100%+ comprometido) | sin_volumen (mark fuera de
+//                     CAT_COMPOSICION, informativo). Gate = APP_KEY (mismo de crear
+//                     OT). Salta 2.21 (release front-only del scanner) para alinear
+//                     numeracion con el frontend.
 // v2.20 (2026-06-23): titulo_actividad persistido como columna 19 (TRAILING).
 //                     Cambio aditivo: filas viejas la dejan vacía, ningún
 //                     índice hardcodeado (rowsOT[i][N]) se rompe. El front
@@ -131,6 +146,7 @@ function doPost(e) {
     const raw  = (e.postData && e.postData.contents) ? e.postData.contents : '{}';
     const data = JSON.parse(raw);
     const accion = data.action || '';
+    if (accion === 'prechequeoMarks')      return handlePrechequeoMarks(data);
     if (accion === 'reservarFolio')        return handleReservarFolio(data);
     if (accion === 'iniciarUploadPDF')     return handleIniciarUploadPDF(data);
     if (accion === 'iniciarActualizarPDF') return handleIniciarActualizarPDF(data);
@@ -605,6 +621,144 @@ function paginaMensajeOT(titulo, mensaje) {
     'h2{color:#8B6914;margin-bottom:12px}p{font-size:14px;color:#4A4A48}</style>' +
     '</head><body><div class="box"><h2>' + escapeHtml(titulo) + '</h2>' +
     '<p>' + mensaje + '</p></div></body></html>';
+}
+
+// ── ENDPOINT POST: PRE-CHEQUEO DE MARKS (v2.22) ────────────────
+// Validacion anti-duplicado por mark+etapa+volumen. SOLO LECTURA — no escribe
+// ninguna hoja. Se llama desde el frontend ANTES de reservar folio / armar PDF.
+//
+// Payload: { action:'prechequeoMarks', token, proyecto, etapa, marks:[{mark, qty}] }
+// Por cada mark compara (volumen ya comprometido en esta etapa) + (qty solicitada)
+// contra el volumen TOTAL del mark:
+//   - VOLUMEN TOTAL      = Σ CAT_COMPOSICION.qty (col 3) donde componente (col 2) == mark, del proyecto.
+//   - VOLUMEN COMPROMETIDO = Σ OT_LOTE_MARKS.qty (col 5) de filas cuyo folio (join a cabecera OT)
+//     tiene la MISMA etapa (cabecera col D idx 3) Y estado de cabecera (col K idx 10) ACTIVO.
+//   - ESTADOS ACTIVOS: PENDIENTE_APROBACION | APROBADA | EN_PROCESO | COMPLETADA.
+//     ⚠️ EXCLUYE RECHAZADA y los placeholders 'PENDIENTE'/'BORRADOR': handleRechazarOT NO
+//     borra las filas de OT_LOTE_MARKS (quedan con estado_lote='CREADO'), por eso NO se
+//     filtra por estado_lote sino por el ESTADO DE LA CABECERA, uniendo por folio
+//     (mismo patron que handleListaLoteMarks: etapaPorFolio / estadoPorFolio).
+// Veredicto por mark: 'ok' | 'advertencia' (supera total pero queda saldo > 0) |
+//   'bloqueo' (comprometido >= total) | 'sin_volumen' (mark fuera de CAT_COMPOSICION,
+//   informativo, NO escala el global). veredicto_global = bloqueo si algun mark bloquea;
+//   si no, advertencia si alguno advierte; si no, ok.
+// Gate: APP_KEY ('ot') — el mismo permiso que crear OT (no inventa permiso nuevo).
+function handlePrechequeoMarks(data) {
+  const auth = autenticarConApp(data.token, APP_KEY);
+  if (!auth.ok) return jsonResp(auth);
+
+  const proyecto = String(data.proyecto || '').trim();
+  const etapa    = String(data.etapa || '').trim();
+  const marks    = Array.isArray(data.marks) ? data.marks : [];
+  if (!proyecto) return jsonResp({ ok: false, error: 'Proyecto requerido' });
+  if (!etapa)    return jsonResp({ ok: false, error: 'Etapa requerida' });
+  if (!marks.length) {
+    return jsonResp({ ok: true, proyecto: proyecto, etapa: etapa, veredicto_global: 'ok', resultados: [] });
+  }
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  // 1) VOLUMEN TOTAL por mark desde CAT_COMPOSICION (Σ qty col 3 por componente col 2, del proyecto).
+  const totalPorMark = {};
+  const shComp = ss.getSheetByName(H_COMPOSICION);
+  if (shComp) {
+    const rc = shComp.getDataRange().getValues();
+    for (let i = 1; i < rc.length; i++) {
+      if (String(rc[i][0] || '').trim() !== proyecto) continue;                 // col 0 proyecto
+      const comp = String(rc[i][2] || '').trim();                               // col 2 componente
+      if (!comp) continue;
+      totalPorMark[comp] = (totalPorMark[comp] || 0) + (parseFloat(rc[i][3]) || 0);  // col 3 qty
+    }
+  }
+
+  // 2) Join por folio a la cabecera OT: etapa (col D idx 3) y estado (col K idx 10).
+  const etapaPorFolio = {};
+  const estadoPorFolio = {};
+  const shOT = ss.getSheetByName(H_OT);
+  if (shOT) {
+    const ot = shOT.getDataRange().getValues();
+    for (let i = 1; i < ot.length; i++) {
+      const folio = String(ot[i][0] || '').trim();
+      if (!folio) continue;
+      etapaPorFolio[folio]  = String(ot[i][3]  || '').trim();   // col 4 etapa
+      estadoPorFolio[folio] = String(ot[i][10] || '').trim();   // col 11 estado
+    }
+  }
+
+  // Estados de cabecera que CUENTAN como volumen comprometido. RECHAZADA / 'PENDIENTE'
+  // (reservada sin crear) / 'BORRADOR' / '' quedan FUERA aunque tengan filas de lote.
+  const ESTADOS_ACTIVOS = {
+    'PENDIENTE_APROBACION': true, 'APROBADA': true, 'EN_PROCESO': true, 'COMPLETADA': true
+  };
+
+  // 3) VOLUMEN COMPROMETIDO por mark en OTs activas de la MISMA etapa, y los folios
+  //    donde cada mark ya esta comprometido (para citarlos en el bloqueo del front).
+  const comprometidoPorMark = {};
+  const foliosPorMark = {};   // mark -> [{folio, qty, estado}]
+  const shLote = ss.getSheetByName(H_LOTE_MARKS);
+  if (shLote) {
+    const rl = shLote.getDataRange().getValues();
+    for (let i = 1; i < rl.length; i++) {
+      const folio = String(rl[i][1] || '').trim();                              // col 2 folio
+      if (!folio) continue;
+      if (String(etapaPorFolio[folio] || '').trim() !== etapa) continue;        // misma etapa
+      const estadoOT = String(estadoPorFolio[folio] || '').trim().toUpperCase();
+      if (!ESTADOS_ACTIVOS[estadoOT]) continue;                                  // EXCLUYE RECHAZADA y reservadas
+      const mark = String(rl[i][3] || '').trim();                               // col 4 mark
+      if (!mark) continue;
+      const q = parseFloat(rl[i][4]) || 0;                                      // col 5 qty
+      comprometidoPorMark[mark] = (comprometidoPorMark[mark] || 0) + q;
+      if (!foliosPorMark[mark]) foliosPorMark[mark] = [];
+      foliosPorMark[mark].push({ folio: folio, qty: q, estado: estadoOT });
+    }
+  }
+
+  // 4) Clasificar cada mark solicitado.
+  let veredictoGlobal = 'ok';
+  const resultados = marks.map(function (m) {
+    const mark     = String(m.mark || '').trim();
+    const qtySolic = parseFloat(m.qty) || 0;
+    const tieneTotal   = Object.prototype.hasOwnProperty.call(totalPorMark, mark);
+    const total        = totalPorMark[mark] || 0;
+    const comprometido = comprometidoPorMark[mark] || 0;
+    const restante     = total - comprometido;        // puede ser <= 0
+    const folios       = foliosPorMark[mark] || [];
+
+    let veredicto, mensaje;
+    if (!tieneTotal || total <= 0) {
+      veredicto = 'sin_volumen';
+      mensaje = 'El mark ' + mark + ' no tiene volumen total en la composicion del proyecto; no se pudo validar duplicado (revisar manualmente).';
+    } else if (comprometido >= total) {
+      veredicto = 'bloqueo';
+      mensaje = 'El mark ' + mark + ' ya esta 100% comprometido en ' + etapa + ' (' + comprometido + ' de ' + total + ' pz). No se puede crear otra OT para este mark.';
+    } else if (comprometido + qtySolic > total) {
+      veredicto = 'advertencia';
+      mensaje = 'El mark ' + mark + ' solo tiene ' + restante + ' pz por fabricar en ' + etapa + ' (total ' + total + ', ya comprometido ' + comprometido + '), pero esta OT pide ' + qtySolic + '.';
+    } else {
+      veredicto = 'ok';
+      mensaje = '';
+    }
+
+    // Escala el global: bloqueo > advertencia > ok. 'sin_volumen' es informativo, no escala.
+    if (veredicto === 'bloqueo') veredictoGlobal = 'bloqueo';
+    else if (veredicto === 'advertencia' && veredictoGlobal !== 'bloqueo') veredictoGlobal = 'advertencia';
+
+    return {
+      mark: mark,
+      total: total,
+      comprometido: comprometido,
+      restante: restante,
+      qty_solicitada: qtySolic,
+      veredicto: veredicto,
+      mensaje: mensaje,
+      folios: folios
+    };
+  });
+
+  return jsonResp({
+    ok: true, proyecto: proyecto, etapa: etapa,
+    veredicto_global: veredictoGlobal, resultados: resultados
+  });
 }
 
 // ── ENDPOINT POST: RESERVAR FOLIO ──────────────────────────────
