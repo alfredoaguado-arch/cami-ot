@@ -4,7 +4,13 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>CAMI — Orden de Trabajo</title>
-<!-- v2.22 (2026-06-23): pre-chequeo anti-duplicado de marks (mark+etapa+volumen).
+<!-- v2.24 (2026-06-24): fix anexado de planos. (1) recolectar() ahora incluye
+     drive_id en planos_del_lote, para que prepararPlanos() use el proxy de Drive
+     cuando el plano lo tiene (antes lo perdia y caia SIEMPRE a Supabase, aunque
+     el plano ya estuviera migrado). (2) descargarPDFRemoto con AbortController
+     (15s): un Supabase colgado ahora falla con aviso en vez de colgar la OT.
+     (Salta v2.23, reservada por la rama de barras por perfil, hoy superada.)
+     v2.22 (2026-06-23): pre-chequeo anti-duplicado de marks (mark+etapa+volumen).
      Antes de reservar folio / armar PDF, enviarOT() consulta el endpoint
      prechequeoMarks: bloqueo duro si un mark ya esta 100% comprometido en la
      etapa; advertencia con override si supera el saldo por fabricar.
@@ -1415,7 +1421,10 @@ function recolectar() {
       numero_plano: p.numero_plano,
       title: p.title,
       revision: p.revision,
-      url_publica: p.url_publica
+      url_publica: p.url_publica,
+      // v2.24: sin drive_id aqui, prepararPlanos() cae SIEMPRE a Supabase aunque
+      // el plano este migrado a Drive. Incluirlo deja que use el proxy planoBytes.
+      drive_id: p.drive_id
     })),
     lote_marks:   recolectarLoteMarks(),
     responsable:  document.getElementById('responsable').value.trim(),
@@ -1733,16 +1742,24 @@ async function confirmarFirmaYCrear() {
 async function descargarPDFRemoto(url, intentos = 3) {
   let ultimoError;
   for (let i = 0; i < intentos; i++) {
+    // v2.24: timeout duro de 15s por intento. fetch() sin AbortController no expira:
+    // un Supabase free colgado dejaba "Anexando planos..." atorado para siempre.
+    const ctrl = new AbortController();
+    const tid = setTimeout(() => ctrl.abort(), 15000);
     try {
-      const resp = await fetch(url);
+      const resp = await fetch(url, { signal: ctrl.signal });
       if (!resp.ok) throw new Error('HTTP ' + resp.status);
       const buf = await resp.arrayBuffer();
       const header = new TextDecoder().decode(new Uint8Array(buf.slice(0, 5)));
       if (header !== '%PDF-') throw new Error('Respuesta no es un PDF valido (header: ' + header + ')');
       return buf;
     } catch (err) {
-      ultimoError = err;
+      ultimoError = (err && err.name === 'AbortError')
+        ? new Error('Timeout (15s) descargando ' + url)
+        : err;
       if (i < intentos - 1) await new Promise(r => setTimeout(r, 500));
+    } finally {
+      clearTimeout(tid);
     }
   }
   throw ultimoError;
