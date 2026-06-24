@@ -4,7 +4,11 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>CAMI — Orden de Trabajo</title>
-<!-- v2.24 (2026-06-24): fix anexado de planos. (1) recolectar() ahora incluye
+<!-- v2.25 (2026-06-24): nesteos de corte como documentos del lote. La lista de
+     planos del lote ahora incluye los cortes (tipo='corte' desde el backend) con
+     un tag "CORTE"; se anexan al PDF junto con los planos por el MISMO pipeline
+     (match por mark + proxy de Drive + timeout). Requiere backend v2.25.
+     v2.24 (2026-06-24): fix anexado de planos. (1) recolectar() ahora incluye
      drive_id en planos_del_lote, para que prepararPlanos() use el proxy de Drive
      cuando el plano lo tiene (antes lo perdia y caia SIEMPRE a Supabase, aunque
      el plano ya estuviera migrado). (2) descargarPDFRemoto con AbortController
@@ -990,7 +994,11 @@ function renderizarPlanosLote() {
     const codigoCell = p.url_publica
       ? '<a href="' + escapeAttr(p.url_publica) + '" target="_blank" style="font-weight:700;color:#1a1a18;text-decoration:none">' + codigoTxt + '</a>'
       : '<span style="font-weight:700;color:#1a1a18">' + codigoTxt + '</span>';
-    const num = 'Plano ' + escapeHtml(p.numero_plano || '') + (p.revision ? ' Rev ' + escapeHtml(p.revision) : '');
+    // v2.25: los nesteos de corte (tipo='corte') se muestran con un tag "CORTE"
+    // en vez de "Plano N Rev"; conviven con los planos en la misma lista del lote.
+    const num = (p.tipo === 'corte')
+      ? '<span style="display:inline-block;background:#E8F0F8;color:#2A5A8C;font-weight:700;font-size:10px;letter-spacing:.04em;padding:2px 7px;border-radius:4px">CORTE</span>'
+      : ('Plano ' + escapeHtml(p.numero_plano || '') + (p.revision ? ' Rev ' + escapeHtml(p.revision) : ''));
     return '<div style="display:flex;gap:12px;align-items:center;padding:8px 0;border-bottom:1px solid #f0eee8;font-size:12px">' +
            '<span style="color:#3B6D11;font-size:14px;width:16px;flex-shrink:0">&#10003;</span>' +
            '<span style="min-width:140px;flex-shrink:0">' + codigoCell + '</span>' +
@@ -999,7 +1007,7 @@ function renderizarPlanosLote() {
            '</div>';
   }).join('');
   const n = _planosDelLote.length;
-  const total = '<div style="font-size:11px;color:#888780;margin-top:10px;text-align:right">Total: ' + n + ' plano' + (n === 1 ? '' : 's') + ' unico' + (n === 1 ? '' : 's') + ' (dedup por codigo).</div>';
+  const total = '<div style="font-size:11px;color:#888780;margin-top:10px;text-align:right">Total: ' + n + ' documento' + (n === 1 ? '' : 's') + ' (planos + cortes, dedup por codigo).</div>';
   cont.innerHTML = cabecera + filas + total;
 }
 
