@@ -1,5 +1,5 @@
 // ================================================================
-// CAMI - Apps Script ORDENES DE TRABAJO v2.22
+// CAMI - Apps Script ORDENES DE TRABAJO v2.23
 // Bound al Sheet de OT (CAMI_OT_DB) - ID 12WU13Qp2DPXjaqAMuXg-yYYizuKqMU1K04v0nw0Ud7o
 //
 // REDISENIO COMPLETO vs v1.3:
@@ -48,7 +48,19 @@
 // Folder Drive Firmas:  (subcarpeta automatica dentro del folder de OT)
 // ================================================================
 
-const MODULE_VERSION = '2.22';
+const MODULE_VERSION = '2.23';
+// v2.23 (2026-06-24): endpoint NUEVO pdfCorteBarras (GET publico) — liga on-demand
+//                     los PDFs de corte de BARRA (perfiles HSS/L) a una OT, sin
+//                     crear OTs ni modelar planchon. Recibe (proyecto, folio):
+//                     lee los marks del lote en OT_LOTE_MARKS, los mapea a
+//                     CAT_ITEMS.descripcion (el perfil limpio, ej. 'HSS6X6X3/8'),
+//                     filtra barras, normaliza al slug del archivo ('/'->'-') y
+//                     busca 'PREFIJO_BARRA_<slug>.pdf' bajo la carpeta del
+//                     proyecto (CORTE_CONFIG) verificando ancestro; al archivo
+//                     hallado le aplica el MISMO sharing del PDF de OT
+//                     (ANYONE_WITH_LINK) y devuelve su URL. SOLO LECTURA del Sheet.
+//                     Solo barras (placas en otra fase). No toca el PDF de la OT
+//                     ni el flujo de creacion.
 // v2.22 (2026-06-23): endpoint NUEVO prechequeoMarks — validacion anti-duplicado
 //                     de marks por mark+etapa+volumen. SOLO LECTURA: no escribe
 //                     ninguna hoja, no toca el flujo de creacion existente. Por
@@ -88,6 +100,15 @@ const LOGO_FILE_ID = '1J9yDatRxKTG_5AAPOpZblUMa-OPeJ5qP';
 // pedidos de fileIds arbitrarios).
 const PLANOS_FOLDER_ID = '1kMtqJ5PzNse3EA_2uyouH1cZ8XCXG4eQ';
 
+// v2.23: config de PDFs de corte por proyecto (Fase BARRAS). 'folder' es la RAIZ
+// del arbol en Drive donde viven los PDFs (pueden estar en subcarpetas; la busqueda
+// verifica ancestro). 'prefijo' es el prefijo del nombre de archivo. Hoy solo OWOW;
+// agregar proyectos aqui sin tocar codigo. Si un proyecto no esta, el endpoint
+// responde soportado:false (sin error).
+const CORTE_CONFIG = {
+  'HARRISON-OWOW': { folder: '12C1jHJ07Y6OC_WumfC4wd_p7zzSdOVQg', prefijo: 'OWOW_MISC' }
+};
+
 const APP_KEY         = 'ot';
 const APP_KEY_APROBAR = 'ot-aprobar';
 const APP_KEY_CERRAR  = 'ot-cerrar';
@@ -126,6 +147,7 @@ function doGet(e) {
     if (accion === 'listaItemsPorProyecto') return handleListaItemsPorProyecto(e.parameter.proyecto || '');
     if (accion === 'listaComposicion')      return handleListaComposicion(e.parameter.proyecto || '');
     if (accion === 'listaLoteMarks')        return handleListaLoteMarks(e.parameter.proyecto || '');
+    if (accion === 'pdfCorteBarras')        return handlePdfCorteBarras(e.parameter.proyecto || '', e.parameter.folio || '');
     if (accion === 'listaPlanosPorProyecto') return handleListaPlanosPorProyecto(e.parameter.proyecto || '');
     if (accion === 'listaChecklist')   return handleListaChecklist(e.parameter.etapa || '');
     if (accion === 'listaEtapas')      return handleListaEtapas();
@@ -294,6 +316,124 @@ function handleListaLoteMarks(proyecto) {
     });
   }
   return jsonResp({ ok: true, proyecto: proyecto, total: marks.length, marks: marks });
+}
+
+// ── pdfCorteBarras (v2.23 — GET publico, SOLO LECTURA del Sheet) ───
+// Liga on-demand los PDFs de corte de BARRA a una OT. Recibe (proyecto, folio):
+//   1) lee los marks del lote en OT_LOTE_MARKS para ese folio,
+//   2) los mapea a CAT_ITEMS.descripcion (perfil limpio, ej. 'HSS6X6X3/8'),
+//   3) filtra los que son barra (HSS/L), normaliza al slug ('/'->'-'),
+//   4) busca 'PREFIJO_BARRA_<slug>.pdf' bajo CORTE_CONFIG[proyecto].folder
+//      (verificando ancestro, los PDFs viven en subcarpetas), y
+//   5) al archivo hallado le aplica ANYONE_WITH_LINK (mismo patron del PDF de OT)
+//      y devuelve su URL de visor.
+// Respuesta: { ok, proyecto, folio, soportado, perfiles:[{perfil, archivo, url, encontrado}] }
+// soportado:false si el proyecto no tiene config (sin error). NO escribe el Sheet.
+function handlePdfCorteBarras(proyecto, folio) {
+  proyecto = String(proyecto || '').trim();
+  folio    = String(folio || '').trim();
+  if (!proyecto) return jsonResp({ ok: false, error: 'Proyecto requerido' });
+  if (!folio)    return jsonResp({ ok: false, error: 'Folio requerido' });
+
+  const cfg = CORTE_CONFIG[proyecto];
+  if (!cfg) return jsonResp({ ok: true, proyecto: proyecto, folio: folio, soportado: false, perfiles: [] });
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  // 1) marks del lote para este folio
+  const marksDelFolio = [];
+  const shLote = ss.getSheetByName(H_LOTE_MARKS);
+  if (shLote) {
+    const rl = shLote.getDataRange().getValues();
+    for (let i = 1; i < rl.length; i++) {
+      if (String(rl[i][1] || '').trim() !== folio) continue;   // col 2 folio
+      const mk = String(rl[i][3] || '').trim();                // col 4 mark
+      if (mk) marksDelFolio.push(mk);
+    }
+  }
+  if (!marksDelFolio.length) {
+    return jsonResp({ ok: true, proyecto: proyecto, folio: folio, soportado: true, perfiles: [] });
+  }
+
+  // 2) mapa mark -> descripcion (perfil) desde CAT_ITEMS del proyecto
+  const descPorMark = {};
+  const shItems = ss.getSheetByName(H_ITEMS);
+  if (shItems) {
+    const ri = shItems.getDataRange().getValues();
+    for (let i = 1; i < ri.length; i++) {
+      if (String(ri[i][0] || '').trim() !== proyecto) continue;   // col 0 proyecto
+      const mk = String(ri[i][1] || '').trim();                   // col 1 mark canonico
+      if (mk) descPorMark[mk] = String(ri[i][3] || '').trim();    // col 3 descripcion (perfil)
+    }
+  }
+
+  // 3) set de perfiles de BARRA (dedup) entre los marks del folio
+  const perfilesSet = {};
+  for (let i = 0; i < marksDelFolio.length; i++) {
+    const desc = descPorMark[marksDelFolio[i]] || '';
+    if (desc && _esPerfilBarra(desc)) perfilesSet[desc] = true;
+  }
+  const perfiles = Object.keys(perfilesSet);
+  if (!perfiles.length) {
+    return jsonResp({ ok: true, proyecto: proyecto, folio: folio, soportado: true, perfiles: [] });
+  }
+
+  // 4) por cada perfil: nombre esperado, busca en Drive bajo la raiz, comparte y URL
+  const resultados = perfiles.map(function (perfil) {
+    const slug   = _slugPerfil(perfil);
+    const nombre = cfg.prefijo + '_BARRA_' + slug + '.pdf';
+    let url = '';
+    try {
+      const it = DriveApp.getFilesByName(nombre);
+      while (it.hasNext()) {
+        const f = it.next();
+        if (_esDescendienteDeCarpeta(f, cfg.folder, 6)) {
+          // Mismo patron de sharing que el PDF de la OT: link accesible sin login.
+          f.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+          url = 'https://drive.google.com/file/d/' + f.getId() + '/view';
+          break;
+        }
+      }
+    } catch (e) { /* archivo inaccesible: se reporta como no encontrado */ }
+    return { perfil: perfil, archivo: nombre, url: url, encontrado: !!url };
+  });
+
+  return jsonResp({ ok: true, proyecto: proyecto, folio: folio, soportado: true, perfiles: resultados });
+}
+
+// Normaliza un perfil (CAT_ITEMS.descripcion) al slug del nombre de archivo:
+// MAYUSCULAS, sin espacios, '/' -> '-'. Ej: 'HSS6X6X3/8' -> 'HSS6X6X3-8'.
+function _slugPerfil(perfil) {
+  return String(perfil || '').trim().toUpperCase().replace(/\s+/g, '').replace(/\//g, '-');
+}
+
+// ¿La descripcion corresponde a una BARRA (perfil) y no a una placa? Barras:
+// HSS (tubo estructural) o angulo 'L' seguido de digito. Placas empiezan con 'PL'.
+function _esPerfilBarra(desc) {
+  return /^(HSS|L\d)/i.test(String(desc || '').trim());
+}
+
+// Variante generica del chequeo de ancestros (igual patron que _esDescendienteDeOT/Planos):
+// true si `folderId` esta en la cadena de padres de `file` (BFS, hasta `maxNiveles`).
+function _esDescendienteDeCarpeta(file, folderId, maxNiveles) {
+  const tope = maxNiveles || 6;
+  let level = 0;
+  const queue = [];
+  const it = file.getParents();
+  while (it.hasNext()) queue.push(it.next());
+  while (queue.length && level < tope) {
+    const next = [];
+    for (let i = 0; i < queue.length; i++) {
+      const p = queue[i];
+      if (p.getId() === folderId) return true;
+      const sub = p.getParents();
+      while (sub.hasNext()) next.push(sub.next());
+    }
+    queue.length = 0;
+    Array.prototype.push.apply(queue, next);
+    level++;
+  }
+  return false;
 }
 
 function handleListaPlanosPorProyecto(proyecto) {
