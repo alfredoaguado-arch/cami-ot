@@ -4,7 +4,11 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>CAMI — Orden de Trabajo</title>
-<!-- v2.21 (2026-06-22): scanner QR integrado en pestaña Cerrar — evita
+<!-- v2.22 (2026-06-23): pre-chequeo anti-duplicado de marks (mark+etapa+volumen).
+     Antes de reservar folio / armar PDF, enviarOT() consulta el endpoint
+     prechequeoMarks: bloqueo duro si un mark ya esta 100% comprometido en la
+     etapa; advertencia con override si supera el saldo por fabricar.
+     v2.21 (2026-06-22): scanner QR integrado en pestaña Cerrar — evita
      re-login en Safari cuando se escanea el QR de cierre de papel.
      v2.20 (2026-06-21): theme central CAMI (navy + naranja + papel + Sora/DM Sans).
      Hosted en cami-app2/theme/v1.css. -->
@@ -560,6 +564,21 @@ textarea{resize:vertical;min-height:60px}
       <div class="modal-actions" style="margin-top:8px">
         <button class="btn-secondary" onclick="cerrarFirmaRecepcionModal()">Cancelar</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- Pre-chequeo anti-duplicado de marks (v2.22) -->
+<div id="prechequeo-modal" class="modal-overlay">
+  <div class="modal-box">
+    <div class="modal-header">
+      <strong id="prechequeo-titulo">VALIDACION DE MARKS</strong>
+      <button onclick="cerrarPrechequeoModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <p id="prechequeo-intro"></p>
+      <div id="prechequeo-lista"></div>
+      <div class="modal-actions" id="prechequeo-actions"></div>
     </div>
   </div>
 </div>
@@ -1549,12 +1568,110 @@ async function enviarOT() {
   if (!d.proyecto)    return showToast('Selecciona un proyecto.', 'err');
   if (!d.etapa)       return showToast('Selecciona una etapa.', 'err');
   if (!d.responsable) return showToast('Responsable requerido.', 'err');
+
+  // v2.22: pre-chequeo anti-duplicado de marks (mark+etapa+volumen) ANTES de
+  // reservar folio / armar PDF. Bloqueo duro si algun mark ya esta 100%
+  // comprometido en esta etapa; advertencia con override si supera el saldo.
+  const _lote = d.lote_marks || [];
+  if (_lote.length) {
+    const token0 = getToken();
+    let pc = null;
+    try {
+      pc = await prechequeoMarks(token0, d.proyecto, d.etapa, _lote);
+    } catch (err) {
+      // Degradacion suave: si el backend no responde o es viejo (sin endpoint),
+      // avisamos y dejamos continuar — no bloqueamos por una falla de validacion.
+      showToast('No se pudo validar duplicados de marks (' + err.message + '). Continuo sin validar.', 'err');
+    }
+    if (pc) {
+      if (pc.veredicto_global === 'bloqueo') {
+        await mostrarPrechequeoModal(pc);   // solo informa; no permite continuar
+        return;
+      }
+      if (pc.veredicto_global === 'advertencia') {
+        const continuar = await mostrarPrechequeoModal(pc);
+        if (!continuar) return;             // el supervisor cancelo
+      } else {
+        // ok: avisar (informativo) si algun mark no tiene volumen en composicion.
+        const sinVol = (pc.resultados || []).filter(r => r.veredicto === 'sin_volumen');
+        if (sinVol.length) showToast(sinVol.length + ' mark(s) sin volumen en composicion; no se validaron duplicados.', 'err');
+      }
+    }
+  }
+
   // v2.14: la firma de recepcion se captura en el modal de APROBAR (en campo,
   // frente al responsable), no al crear. _firmaRecepcion queda null aqui;
   // el recuadro "RECEPCION DEL RESPONSABLE" del PDF impreso queda vacio.
   _firmaRecepcion = null;
   await generarOT();
 }
+
+// ── PRE-CHEQUEO DE MARKS (v2.22) ──────────────────────────────
+// Llama al endpoint prechequeoMarks con los marks+qty del lote. Devuelve el
+// JSON {veredicto_global, resultados:[...]}. Lanza si el backend responde !ok.
+async function prechequeoMarks(token, proyecto, etapa, lote) {
+  const marks = (lote || []).map(x => ({ mark: x.mark, qty: parseFloat(x.qty) || 0 }));
+  const resp = await fetch(SCRIPT_URL, {
+    method: 'POST', headers: { 'Content-Type': 'text/plain' },
+    body: JSON.stringify({ action: 'prechequeoMarks', token, proyecto, etapa, marks })
+  });
+  const j = await resp.json();
+  if (!j.ok) throw new Error(j.error || 'pre-chequeo fallo');
+  return j;
+}
+
+let _prechequeoResolver = null;
+
+// Muestra el modal segun veredicto_global. Devuelve Promise<boolean>:
+//   true  -> el supervisor eligio "Continuar de todos modos" (solo en advertencia)
+//   false -> cancelo, o es BLOQUEO (no hay boton de continuar)
+function mostrarPrechequeoModal(pc) {
+  return new Promise(function (resolve) {
+    _prechequeoResolver = resolve;
+    const esBloqueo = pc.veredicto_global === 'bloqueo';
+
+    document.getElementById('prechequeo-titulo').textContent =
+      esBloqueo ? 'MARK YA COMPROMETIDO' : 'REVISAR VOLUMEN DE MARKS';
+    document.getElementById('prechequeo-intro').textContent = esBloqueo
+      ? 'Uno o mas marks ya estan 100% comprometidos en esta etapa. No se puede crear la OT mientras los incluya: quitalos del lote o ajusta el proyecto.'
+      : 'Algunos marks superan el volumen que queda por fabricar en esta etapa. Revisa antes de continuar.';
+
+    const relevantes = (pc.resultados || []).filter(function (r) {
+      return r.veredicto === 'bloqueo' || r.veredicto === 'advertencia';
+    });
+    document.getElementById('prechequeo-lista').innerHTML = relevantes.map(function (r) {
+      const bloq    = r.veredicto === 'bloqueo';
+      const color   = bloq ? 'var(--cami-red)' : 'var(--cami-orange)';
+      const etiqueta= bloq ? 'BLOQUEADO' : 'ADVERTENCIA';
+      const detalle = bloq
+        ? ('Comprometido ' + r.comprometido + ' de ' + r.total + ' pz (100%). Esta OT pide ' + r.qty_solicitada + '.')
+        : ('Quedan ' + r.restante + ' pz por fabricar de ' + r.total + ' (ya comprometido ' + r.comprometido + '). Esta OT pide ' + r.qty_solicitada + '.');
+      const foliosTxt = (r.folios && r.folios.length)
+        ? ('Ya comprometido en: ' + r.folios.map(function (f) { return f.folio + ' (' + f.qty + ' pz · ' + f.estado + ')'; }).join('; '))
+        : '';
+      return '<div style="border-left:3px solid ' + color + ';background:var(--cami-paper-2);padding:8px 10px;margin-bottom:8px;border-radius:4px;font-size:12px;line-height:1.5">' +
+               '<div style="font-family:var(--cami-font-display);font-weight:700;color:' + color + ';font-size:11px;letter-spacing:.04em">' + etiqueta + ' · ' + escapeHtml(r.mark) + '</div>' +
+               '<div style="color:var(--cami-ink-soft);margin-top:3px">' + escapeHtml(detalle) + '</div>' +
+               (foliosTxt ? '<div style="color:var(--cami-ink-soft);margin-top:3px">' + escapeHtml(foliosTxt) + '</div>' : '') +
+             '</div>';
+    }).join('');
+
+    document.getElementById('prechequeo-actions').innerHTML = esBloqueo
+      ? '<button class="btn-secondary" onclick="resolverPrechequeo(false)">Entendido</button>'
+      : '<button class="btn-secondary" onclick="resolverPrechequeo(false)">Cancelar</button>' +
+        '<button class="btn-primary" onclick="resolverPrechequeo(true)">Continuar de todos modos</button>';
+
+    document.getElementById('prechequeo-modal').classList.add('show');
+  });
+}
+
+function resolverPrechequeo(continuar) {
+  document.getElementById('prechequeo-modal').classList.remove('show');
+  if (_prechequeoResolver) { const r = _prechequeoResolver; _prechequeoResolver = null; r(continuar); }
+}
+
+// Cierre por la X = equivale a cancelar (no continuar).
+function cerrarPrechequeoModal() { resolverPrechequeo(false); }
 
 // ── MODAL FIRMA DE RECEPCION (signature_pad) ──────────────────
 function abrirFirmaRecepcionModal() {
