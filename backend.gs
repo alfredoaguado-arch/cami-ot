@@ -1,5 +1,5 @@
 // ================================================================
-// CAMI - Apps Script ORDENES DE TRABAJO v2.23
+// CAMI - Apps Script ORDENES DE TRABAJO v2.25
 // Bound al Sheet de OT (CAMI_OT_DB) - ID 12WU13Qp2DPXjaqAMuXg-yYYizuKqMU1K04v0nw0Ud7o
 //
 // REDISENIO COMPLETO vs v1.3:
@@ -48,7 +48,21 @@
 // Folder Drive Firmas:  (subcarpeta automatica dentro del folder de OT)
 // ================================================================
 
-const MODULE_VERSION = '2.23';
+const MODULE_VERSION = '2.25';
+// v2.25 (2026-06-24): NESTEOS DE CORTE como documentos del lote (placas Y barras),
+//                     con el MISMO mecanismo que los planos (supera el enfoque de
+//                     barras-por-perfil de v2.23). Dos cambios:
+//                     (1) handleListaPlanosPorProyecto devuelve 'tipo' (col O idx 14;
+//                         'plano' por default, 'corte' para nesteos). El front pinta
+//                         un tag "Corte" y los anexa por el MISMO pipeline de planos
+//                         (match por mark label/canonico + proxy planoBytes + timeout).
+//                     (2) handlePlanoBytes amplia el chequeo de ancestro: autoriza
+//                         descendientes de PLANOS_FOLDER_ID O de cualquier carpeta de
+//                         cortes en CORTE_CONFIG (reusa _esDescendienteDeCarpeta). Sin
+//                         esto el proxy rechazaria los PDF de corte (viven en otro arbol).
+//                     Los 21 cortes de HARRISON-OWOW se cargan a CAT_PLANOS con un
+//                     one-off (resuelve drive_id por nombre_archivo, omite no subidos).
+//                     Salta 2.24 (release front-only del fix de anexado de planos).
 // v2.23 (2026-06-24): endpoint NUEVO pdfCorteBarras (GET publico) — liga on-demand
 //                     los PDFs de corte de BARRA (perfiles HSS/L) a una OT, sin
 //                     crear OTs ni modelar planchon. Recibe (proyecto, folio):
@@ -463,7 +477,10 @@ function handleListaPlanosPorProyecto(proyecto) {
       // CAT_PLANOS hoy tiene: M = prioridad (anadida antes que drive_id). drive_id se
       // ubica en col N (idx 13), primera columna libre despues de prioridad. Si la celda
       // esta vacia el frontend cae a url_publica como fallback.
-      drive_id:      String(rows[i][13] || '').trim()   // col N (nuevo).
+      drive_id:      String(rows[i][13] || '').trim(),  // col N
+      // v2.25: tipo de documento — 'plano' (default) | 'corte' (nesteo). col O idx 14.
+      // El front lo usa para el tag "Corte"; el anexado lo ignora (mismo pipeline).
+      tipo:          String(rows[i][14] || '').trim().toLowerCase() || 'plano'   // col O
     });
   }
   return jsonResp({ ok: true, proyecto: proyecto, total: planos.length, planos: planos });
@@ -607,7 +624,7 @@ function handlePlanoBytes(fileId) {
   if (!fileId) return jsonResp({ ok: false, error: 'fileId requerido' });
   try {
     const file = DriveApp.getFileById(fileId);
-    if (!_esDescendienteDePlanos(file)) {
+    if (!_planoOCorteAutorizado(file)) {
       return jsonResp({ ok: false, error: 'fileId no autorizado' });
     }
     const blob = file.getBlob();
@@ -616,6 +633,21 @@ function handlePlanoBytes(fileId) {
   } catch (err) {
     return jsonResp({ ok: false, error: err.message });
   }
+}
+
+// v2.25: un fileId esta autorizado para servirse como documento del lote si desciende
+// del arbol de planos (PLANOS_FOLDER_ID) O de cualquier carpeta de cortes configurada
+// (CORTE_CONFIG[*].folder). Los nesteos viven en otro arbol que los planos, por eso
+// el chequeo viejo (_esDescendienteDePlanos) los rechazaba. Reusa _esDescendienteDeCarpeta.
+function _planoOCorteAutorizado(file) {
+  if (_esDescendienteDePlanos(file)) return true;
+  for (const proy in CORTE_CONFIG) {
+    if (CORTE_CONFIG[proy] && CORTE_CONFIG[proy].folder &&
+        _esDescendienteDeCarpeta(file, CORTE_CONFIG[proy].folder, 6)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function handleVerificar(folio) {
