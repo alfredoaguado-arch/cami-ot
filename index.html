@@ -4,7 +4,11 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>CAMI — Orden de Trabajo</title>
-<!-- v2.25 (2026-06-24): nesteos de corte como documentos del lote. La lista de
+<!-- v2.26 (2026-06-25): guard anti doble-envio al crear OT. enviarOT marca un flag
+     _enviandoOT y deshabilita #btn-submit ("Creando…") ANTES de cualquier await
+     (antes el boton solo se bloqueaba dentro de generarOT, tras el prechequeo, y un
+     doble-click reservaba dos folios -> dos OTs). try/finally re-habilita siempre.
+     v2.25 (2026-06-24): nesteos de corte como documentos del lote. La lista de
      planos del lote ahora incluye los cortes (tipo='corte' desde el backend) con
      un tag "CORTE"; se anexan al PDF junto con los planos por el MISMO pipeline
      (match por mark + proxy de Drive + timeout). Requiere backend v2.25.
@@ -1577,7 +1581,15 @@ async function cargarDesdePDF(event) {
 }
 
 // ── ENVIO DE OT ───────────────────────────────────────────────
+// v2.26: guard anti doble-envio. Antes, enviarOT NO deshabilitaba el boton hasta
+// dentro de generarOT (DESPUES del await de prechequeoMarks), dejando una ventana
+// en la que un segundo click reservaba OTRO folio -> OT duplicada. Ahora marcamos
+// _enviandoOT y deshabilitamos #btn-submit ANTES de cualquier await; el try/finally
+// garantiza que el boton nunca quede trabado (re-habilita en exito, error o cancel).
+let _enviandoOT = false;
+
 async function enviarOT() {
+  if (_enviandoOT) return;                 // ignora clicks subsecuentes mientras procesa
   const token = getToken();
   if (!token) { abrirReloginModal(); return; }
   const d = recolectar();
@@ -1586,41 +1598,51 @@ async function enviarOT() {
   if (!d.etapa)       return showToast('Selecciona una etapa.', 'err');
   if (!d.responsable) return showToast('Responsable requerido.', 'err');
 
-  // v2.22: pre-chequeo anti-duplicado de marks (mark+etapa+volumen) ANTES de
-  // reservar folio / armar PDF. Bloqueo duro si algun mark ya esta 100%
-  // comprometido en esta etapa; advertencia con override si supera el saldo.
-  const _lote = d.lote_marks || [];
-  if (_lote.length) {
-    const token0 = getToken();
-    let pc = null;
-    try {
-      pc = await prechequeoMarks(token0, d.proyecto, d.etapa, _lote);
-    } catch (err) {
-      // Degradacion suave: si el backend no responde o es viejo (sin endpoint),
-      // avisamos y dejamos continuar — no bloqueamos por una falla de validacion.
-      showToast('No se pudo validar duplicados de marks (' + err.message + '). Continuo sin validar.', 'err');
-    }
-    if (pc) {
-      if (pc.veredicto_global === 'bloqueo') {
-        await mostrarPrechequeoModal(pc);   // solo informa; no permite continuar
-        return;
+  // Marcar "enviando" y bloquear el boton ANTES del primer await (prechequeo de
+  // red / generarOT). El try/finally re-habilita pase lo que pase.
+  _enviandoOT = true;
+  const _btnSubmit = document.getElementById('btn-submit');
+  if (_btnSubmit) { _btnSubmit.disabled = true; _btnSubmit.textContent = 'Creando…'; }
+  try {
+    // v2.22: pre-chequeo anti-duplicado de marks (mark+etapa+volumen) ANTES de
+    // reservar folio / armar PDF. Bloqueo duro si algun mark ya esta 100%
+    // comprometido en esta etapa; advertencia con override si supera el saldo.
+    const _lote = d.lote_marks || [];
+    if (_lote.length) {
+      const token0 = getToken();
+      let pc = null;
+      try {
+        pc = await prechequeoMarks(token0, d.proyecto, d.etapa, _lote);
+      } catch (err) {
+        // Degradacion suave: si el backend no responde o es viejo (sin endpoint),
+        // avisamos y dejamos continuar — no bloqueamos por una falla de validacion.
+        showToast('No se pudo validar duplicados de marks (' + err.message + '). Continuo sin validar.', 'err');
       }
-      if (pc.veredicto_global === 'advertencia') {
-        const continuar = await mostrarPrechequeoModal(pc);
-        if (!continuar) return;             // el supervisor cancelo
-      } else {
-        // ok: avisar (informativo) si algun mark no tiene volumen en composicion.
-        const sinVol = (pc.resultados || []).filter(r => r.veredicto === 'sin_volumen');
-        if (sinVol.length) showToast(sinVol.length + ' mark(s) sin volumen en composicion; no se validaron duplicados.', 'err');
+      if (pc) {
+        if (pc.veredicto_global === 'bloqueo') {
+          await mostrarPrechequeoModal(pc);   // solo informa; no permite continuar
+          return;
+        }
+        if (pc.veredicto_global === 'advertencia') {
+          const continuar = await mostrarPrechequeoModal(pc);
+          if (!continuar) return;             // el supervisor cancelo
+        } else {
+          // ok: avisar (informativo) si algun mark no tiene volumen en composicion.
+          const sinVol = (pc.resultados || []).filter(r => r.veredicto === 'sin_volumen');
+          if (sinVol.length) showToast(sinVol.length + ' mark(s) sin volumen en composicion; no se validaron duplicados.', 'err');
+        }
       }
     }
-  }
 
-  // v2.14: la firma de recepcion se captura en el modal de APROBAR (en campo,
-  // frente al responsable), no al crear. _firmaRecepcion queda null aqui;
-  // el recuadro "RECEPCION DEL RESPONSABLE" del PDF impreso queda vacio.
-  _firmaRecepcion = null;
-  await generarOT();
+    // v2.14: la firma de recepcion se captura en el modal de APROBAR (en campo,
+    // frente al responsable), no al crear. _firmaRecepcion queda null aqui;
+    // el recuadro "RECEPCION DEL RESPONSABLE" del PDF impreso queda vacio.
+    _firmaRecepcion = null;
+    await generarOT();
+  } finally {
+    _enviandoOT = false;
+    if (_btnSubmit) { _btnSubmit.disabled = false; _btnSubmit.textContent = 'Crear OT'; }
+  }
 }
 
 // ── PRE-CHEQUEO DE MARKS (v2.22) ──────────────────────────────
