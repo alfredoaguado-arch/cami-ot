@@ -573,12 +573,12 @@ textarea{resize:vertical;min-height:60px}
 <div id="firma-recepcion-modal" class="modal-overlay">
   <div class="modal-box">
     <div class="modal-header">
-      <strong>FIRMA DE RECEPCION</strong>
+      <strong>FIRMA DEL SUPERVISOR</strong>
       <button onclick="cerrarFirmaRecepcionModal()">&times;</button>
     </div>
     <div class="modal-body">
-      <p>Responsable: <strong id="firma-recepcion-nombre">—</strong><br/>
-         Firma con el dedo para recibir la OT. La firma es obligatoria.</p>
+      <p>Supervisor: <strong id="firma-recepcion-nombre">—</strong><br/>
+         Tu firma autoriza la OT desde el momento en que se crea. El responsable la firmará al recibirla en planta.</p>
       <canvas id="firma-recepcion-canvas" class="firma-canvas"></canvas>
       <div class="modal-actions">
         <button class="btn-secondary" onclick="limpiarFirmaRecepcion()">Limpiar</button>
@@ -1528,7 +1528,10 @@ function recolectar() {
     observaciones:document.getElementById('obs').value.trim(),
     materiales:   materiales,
     entregables:  entregables,
-    firma_recepcion: _firmaRecepcion || ''
+    // v2.34: enviamos como firma_supervisor (el backend la registra como
+    // tipo='APROBACION' del creador y salta el estado a APROBADA directo).
+    // La variable mantiene su nombre por compat con codigo legacy.
+    firma_supervisor: _firmaRecepcion || ''
   };
 }
 function aplicarDatos(d) {
@@ -1795,8 +1798,11 @@ function cerrarPrechequeoModal() { resolverPrechequeo(false); }
 
 // ── MODAL FIRMA DE RECEPCION (signature_pad) ──────────────────
 function abrirFirmaRecepcionModal() {
+  // v2.34: el modal captura la firma del SUPERVISOR (creador), no la del receptor.
+  // El receptor (responsable en planta) firma despues en el flujo de "Recibir".
+  const sess = getSession();
   document.getElementById('firma-recepcion-nombre').textContent =
-    document.getElementById('responsable').value.trim() || '—';
+    (sess && sess.nombre) ? sess.nombre : '—';
   document.getElementById('firma-recepcion-modal').classList.add('show');
   setTimeout(initFirmaRecepcionPad, 60);  // esperar layout para dimensionar el canvas
 }
@@ -1840,9 +1846,11 @@ function cerrarFirmaRecepcionModal() {
 
 async function confirmarFirmaYCrear() {
   if (!_signaturePad || _signaturePad.isEmpty()) {
-    alert('Firma requerida. Firma para recibir la OT.');
+    alert('Firma del supervisor requerida para autorizar la OT.');
     return;
   }
+  // v2.34: la variable se mantiene por compat, pero ahora contiene la firma
+  // del SUPERVISOR (creador). El payload de crearOT la manda como firma_supervisor.
   _firmaRecepcion = _signaturePad.toDataURL('image/png');
   cerrarFirmaRecepcionModal();
   await generarOT();
@@ -2279,6 +2287,37 @@ function abrirAprobarModal(idx) {
        `</tbody></table>`
     : '<p style="font-size:11px;color:#888780">Sin materiales registrados.</p>';
 
+  // v2.34: enrutar UI segun estado de la OT.
+  //   PENDIENTE_APROBACION -> flujo legacy: 2 firmas (aprobador + receptor).
+  //   APROBADA             -> flujo nuevo (firma_supervisor al crear): solo 1
+  //                           firma (receptor). Aviso de que el supervisor ya firmo.
+  const flujoNuevo = (ot.estado === 'APROBADA');
+  const aprobador  = (ot.aprobado_por || '').trim();
+  const fechaAprob = ot.fecha_aprob ? formatDateMx(ot.fecha_aprob) : '';
+
+  const seccionAprobador = flujoNuevo
+    ? `
+      <div style="background:#EAF3DE;border-left:3px solid #3B6D11;padding:10px 12px;margin:14px 0;font-size:12px;color:#1a4a16;border-radius:4px">
+        <b>✓ OT pre-aprobada por el supervisor</b><br/>
+        ${aprobador ? 'Firmada por <b>' + escapeHtml(aprobador) + '</b>' : 'Firmada al crear'}${fechaAprob ? ' el ' + fechaAprob : ''}.<br/>
+        Solo falta la firma del responsable que la recibe en planta.
+      </div>`
+    : `
+      <div class="section-title" style="margin-top:16px;margin-bottom:8px">Firma del aprobador</div>
+      <p style="font-size:11px;color:#4A4A48">Tu firma como aprobador autoriza el inicio del trabajo.</p>
+      <div class="firma-wrap">
+        <canvas id="firma-aprobar-canvas" class="firma-canvas" width="800" height="320"></canvas>
+        <div class="firma-actions">
+          <button type="button" onclick="limpiarFirma('firma-aprobar-canvas')">Limpiar</button>
+        </div>
+      </div>`;
+
+  const accionPrimaria = flujoNuevo ? 'Recibir OT' : 'Aprobar OT';
+  // Rechazo solo aplica a flujo legacy (la OT aun no estaba aprobada).
+  const botonRechazo = flujoNuevo
+    ? ''
+    : `<button class="btn-rechazar" onclick="abrirRechazoModal()" style="flex:1;padding:10px">Rechazar</button>`;
+
   body.innerHTML = `
     <div class="detail-grid">
       <div class="cell"><div class="label">Proyecto</div><div class="val">${escapeHtml(ot.proyecto)}</div></div>
@@ -2294,14 +2333,7 @@ function abrirAprobarModal(idx) {
     <div class="section-title" style="margin-bottom:8px">Materiales / BOM</div>
     ${matsHtml}
 
-    <div class="section-title" style="margin-top:16px;margin-bottom:8px">Firma del aprobador</div>
-    <p style="font-size:11px;color:#4A4A48">Tu firma como aprobador autoriza el inicio del trabajo.</p>
-    <div class="firma-wrap">
-      <canvas id="firma-aprobar-canvas" class="firma-canvas" width="800" height="320"></canvas>
-      <div class="firma-actions">
-        <button type="button" onclick="limpiarFirma('firma-aprobar-canvas')">Limpiar</button>
-      </div>
-    </div>
+    ${seccionAprobador}
 
     <div class="section-title" style="margin-top:16px;margin-bottom:8px">Receptor de la OT</div>
     <p style="font-size:11px;color:#4A4A48">Por defecto es el responsable que se registro al crear la OT. Editalo si en campo recibe otra persona.</p>
@@ -2321,13 +2353,14 @@ function abrirAprobarModal(idx) {
     </div>
 
     <div class="modal-actions" style="margin-top:18px">
-      <button class="btn-rechazar" onclick="abrirRechazoModal()" style="flex:1;padding:10px">Rechazar</button>
-      <button class="btn-success" onclick="confirmarAprobacion()" style="flex:1;padding:10px">Aprobar OT</button>
+      ${botonRechazo}
+      <button class="btn-success" onclick="confirmarAprobacion()" style="flex:1;padding:10px">${accionPrimaria}</button>
     </div>
   `;
   document.getElementById('aprobar-modal').classList.add('show');
   setTimeout(() => {
-    initFirmaCanvas('firma-aprobar-canvas');
+    // v2.34: canvas del aprobador solo se inicializa en flujo legacy.
+    if (!flujoNuevo) initFirmaCanvas('firma-aprobar-canvas');
     initFirmaCanvas('firma-recepcion-aprob-canvas');
   }, 50);
 }
@@ -2444,10 +2477,12 @@ async function inyectarFirmasYReuploadPDF(opts) {
 
 async function confirmarAprobacion() {
   if (!_otEnAprobacion) return;
-  // v2.14+v2.17: validaciones obligatorias. Uso alert() en lugar de showToast
-  // porque el toast vive inline en la pestana (debajo del modal) y no se ve
-  // mientras el modal de aprobacion esta abierto. alert es nativo, encima de todo.
-  if (firmaEstaVacia('firma-aprobar-canvas')) {
+  // v2.34: enrutar segun el estado de la OT.
+  //   PENDIENTE_APROBACION (flujo legacy): exige firma aprobador + receptor.
+  //   APROBADA (flujo nuevo, firma supervisor al crear): solo exige receptor.
+  const flujoNuevo = (_otEnAprobacion.estado === 'APROBADA');
+
+  if (!flujoNuevo && firmaEstaVacia('firma-aprobar-canvas')) {
     alert('Falta la firma del aprobador.'); return;
   }
   if (firmaEstaVacia('firma-recepcion-aprob-canvas')) {
@@ -2457,14 +2492,12 @@ async function confirmarAprobacion() {
   if (!receptorNombre) { alert('Falta el nombre del receptor.'); return; }
 
   const token = getToken(); if (!token) { abrirReloginModal(); return; }
-  const firmaB64 = document.getElementById('firma-aprobar-canvas').toDataURL('image/png');
+  const firmaB64 = flujoNuevo ? '' : document.getElementById('firma-aprobar-canvas').toDataURL('image/png');
   const firmaRecepcionB64 = document.getElementById('firma-recepcion-aprob-canvas').toDataURL('image/png');
 
-  // v2.17 Fase 4: spinner durante todo el flujo (descarga + inyeccion + upload
-  // in-place + registro). Anti-doble-click: deshabilitar boton mientras corre.
   const btnApr = document.querySelector('#aprobar-modal .btn-success');
   if (btnApr) btnApr.disabled = true;
-  mostrarCargando('Preparando aprobacion...');
+  mostrarCargando(flujoNuevo ? 'Preparando recepcion...' : 'Preparando aprobacion...');
 
   try {
     // 1. Extraer fileId del pdf_url de la OT.
@@ -2473,24 +2506,30 @@ async function confirmarAprobacion() {
     if (!m) throw new Error('No se pudo extraer fileId del pdf_url');
     const fileId = m[1];
 
-    // 2-5. Helper compartido v2.19: descarga + inyecta APROBACION + RECEPCION + reupload IN-PLACE.
+    // 2-5. Inyeccion al PDF: en flujo legacy va APROBACION + RECEPCION; en
+    // flujo nuevo solo RECEPCION (la APROBACION del creador ya esta en el PDF
+    // que se subio al crear — o aun no esta, segun el sprint; por ahora solo
+    // inyectamos lo que viene en este paso).
+    const firmasParaInyectar = flujoNuevo
+      ? [{ tipo: 'RECEPCION', b64: firmaRecepcionB64 }]
+      : [
+          { tipo: 'APROBACION', b64: firmaB64 },
+          { tipo: 'RECEPCION',  b64: firmaRecepcionB64 }
+        ];
     await inyectarFirmasYReuploadPDF({
       fileId: fileId,
-      firmas: [
-        { tipo: 'APROBACION', b64: firmaB64 },
-        { tipo: 'RECEPCION',  b64: firmaRecepcionB64 }
-      ],
+      firmas: firmasParaInyectar,
       token: token,
       onProgress: actualizarCargando
     });
 
-    // 6. Marcar APROBADA + guardar firmas en OT_FIRMAS.
-    actualizarCargando('Registrando aprobacion...');
+    // 6. Marcar estado destino + guardar firmas en OT_FIRMAS.
+    actualizarCargando(flujoNuevo ? 'Registrando recepcion...' : 'Registrando aprobacion...');
     const respApr = await fetch(SCRIPT_URL, {
       method: 'POST', headers: { 'Content-Type': 'text/plain' },
       body: JSON.stringify({
         action: 'aprobarOT', token, folio: _otEnAprobacion.folio,
-        firma: firmaB64,
+        firma: firmaB64,                            // vacio en flujo nuevo (backend lo permite)
         firma_recepcion: firmaRecepcionB64,
         receptor_nombre: receptorNombre
       })
@@ -2501,8 +2540,13 @@ async function confirmarAprobacion() {
       throw new Error('aprobarOT: ' + resApr.error);
     }
 
-    showToast('OT <b>' + escapeHtml(_otEnAprobacion.folio) + '</b> aprobada.', 'ok');
+    // v2.34: tras procesar, ofrecer descarga del PDF firmado en una pestana
+    // nueva. El PDF ya esta publico (ANYONE_WITH_LINK) y _otEnAprobacion.pdf_url
+    // apunta al visor de Drive — Hugo lo guarda en el iPad con el menu del visor.
+    const folioOk = _otEnAprobacion.folio;
+    const urlOk   = _otEnAprobacion.pdf_url || '';
     cerrarAprobarModal();
+    mostrarDialogoOTRecibida(folioOk, urlOk, flujoNuevo);
     cargarPorAprobar();
     if (tieneApp(APP_KEY_CERRAR)) cargarPorCerrar();
   } catch (e) {
@@ -2514,6 +2558,42 @@ async function confirmarAprobacion() {
     ocultarCargando();
     if (btnApr) btnApr.disabled = false;
   }
+}
+
+// v2.34: dialogo simple post-aprobacion/recepcion con boton "Descargar OT firmada".
+// Reusa el patron de modal-overlay existente (no crea estructura nueva), pinta
+// HTML inline y lo agrega al body. Click en "Descargar" abre el PDF en pestana
+// nueva (Drive ANYONE_WITH_LINK); el visor de Drive permite descargar al iPad.
+function mostrarDialogoOTRecibida(folio, pdfUrl, esRecepcion) {
+  const titulo = esRecepcion ? 'OT recibida ✓' : 'OT aprobada ✓';
+  const subtitulo = esRecepcion
+    ? 'La OT esta lista para ejecutarse en planta.'
+    : 'La OT fue aprobada y entregada al responsable.';
+  const id = 'dialogo-ot-' + Date.now();
+  const html =
+    '<div id="' + id + '" class="modal-overlay show" style="z-index:2000">' +
+      '<div class="modal-box" style="max-width:420px">' +
+        '<div class="modal-header"><strong>' + titulo + '</strong>' +
+          '<button onclick="document.getElementById(\'' + id + '\').remove()">&times;</button>' +
+        '</div>' +
+        '<div class="modal-body" style="text-align:center">' +
+          '<p style="font-size:13px;color:#4A4A48;margin:0 0 8px">' + subtitulo + '</p>' +
+          '<div style="font-family:\'Courier New\',monospace;font-size:14px;font-weight:700;color:#1a1a18;margin:12px 0">' +
+            escapeHtml(folio) +
+          '</div>' +
+          (pdfUrl
+            ? '<a href="' + escapeAttr(pdfUrl) + '" target="_blank" rel="noopener noreferrer" ' +
+              'class="btn-success" style="display:inline-block;padding:12px 22px;text-decoration:none;font-size:13px;margin-top:6px">' +
+              '📄 Descargar OT firmada</a>' +
+            '<div style="font-size:11px;color:#888780;margin-top:10px">Se abre en una pestana nueva. Desde Drive: ⋮ → Descargar.</div>'
+            : '<p style="color:#A32D2D;font-size:12px">PDF no disponible para descarga.</p>') +
+          '<div class="modal-actions" style="margin-top:18px">' +
+            '<button class="btn-secondary" onclick="document.getElementById(\'' + id + '\').remove()">Cerrar</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  document.body.insertAdjacentHTML('beforeend', html);
 }
 
 function abrirRechazoModal() {
