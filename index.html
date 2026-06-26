@@ -1718,15 +1718,30 @@ async function enviarOT() {
       }
     }
 
-    // v2.14: la firma de recepcion se captura en el modal de APROBAR (en campo,
-    // frente al responsable), no al crear. _firmaRecepcion queda null aqui;
-    // el recuadro "RECEPCION DEL RESPONSABLE" del PDF impreso queda vacio.
-    _firmaRecepcion = null;
-    await generarOT();
+    // v2.34: capturar firma del SUPERVISOR (creador) antes de generar el PDF.
+    // El modal abre con un canvas SignaturePad; al confirmar, llama generarOT()
+    // con _firmaRecepcion populated (la variable conserva su nombre por compat,
+    // pero el payload se envia al backend como 'firma_supervisor'). Si el
+    // supervisor cancela el modal, cerrarFirmaRecepcionModal rehabilita el btn.
+    abrirFirmaRecepcionModal();
+    _enviandoModalAbierto = true;
   } finally {
-    _enviandoOT = false;
-    if (_btnSubmit) { _btnSubmit.disabled = false; _btnSubmit.textContent = 'Crear OT'; }
+    // Solo rehabilitar si NO abrimos el modal de firma. Si esta abierto, el
+    // boton se rehabilita al confirmar/cancelar la firma.
+    if (!_enviandoModalAbierto) {
+      _enviandoOT = false;
+      if (_btnSubmit) { _btnSubmit.disabled = false; _btnSubmit.textContent = 'Crear OT'; }
+    }
   }
+}
+// v2.34: bandera que indica que enviarOT delego el control al modal de firma.
+// El modal (confirmarFirmaYCrear / cerrarFirmaRecepcionModal) rehabilita el btn.
+let _enviandoModalAbierto = false;
+function _liberarBotonCrearOT() {
+  _enviandoOT = false;
+  _enviandoModalAbierto = false;
+  const btn = document.getElementById('btn-submit');
+  if (btn) { btn.disabled = false; btn.textContent = 'Crear OT'; }
 }
 
 // ── PRE-CHEQUEO DE MARKS (v2.22) ──────────────────────────────
@@ -1842,6 +1857,9 @@ function limpiarFirmaRecepcion() {
 
 function cerrarFirmaRecepcionModal() {
   document.getElementById('firma-recepcion-modal').classList.remove('show');
+  // v2.34: si cerramos el modal sin confirmar y el flow de envio estaba
+  // esperando, rehabilitar el boton "Crear OT" (se cancelo la firma).
+  if (_enviandoModalAbierto) _liberarBotonCrearOT();
 }
 
 async function confirmarFirmaYCrear() {
@@ -1852,8 +1870,13 @@ async function confirmarFirmaYCrear() {
   // v2.34: la variable se mantiene por compat, pero ahora contiene la firma
   // del SUPERVISOR (creador). El payload de crearOT la manda como firma_supervisor.
   _firmaRecepcion = _signaturePad.toDataURL('image/png');
-  cerrarFirmaRecepcionModal();
-  await generarOT();
+  // Cerramos sin disparar el rehabilitado del boton: el flow continua a generarOT.
+  document.getElementById('firma-recepcion-modal').classList.remove('show');
+  try {
+    await generarOT();
+  } finally {
+    _liberarBotonCrearOT();
+  }
 }
 
 // ── ANEXAR PLANOS AL PDF (pdf-lib) ────────────────────────────
