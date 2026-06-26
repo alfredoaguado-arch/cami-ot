@@ -1,5 +1,5 @@
 // ================================================================
-// CAMI - Apps Script ORDENES DE TRABAJO v2.30
+// CAMI - Apps Script ORDENES DE TRABAJO v2.31
 // Bound al Sheet de OT (CAMI_OT_DB) - ID 12WU13Qp2DPXjaqAMuXg-yYYizuKqMU1K04v0nw0Ud7o
 //
 // REDISENIO COMPLETO vs v1.3:
@@ -48,7 +48,28 @@
 // Folder Drive Firmas:  (subcarpeta automatica dentro del folder de OT)
 // ================================================================
 
-const MODULE_VERSION = '2.30';
+const MODULE_VERSION = '2.31';
+// v2.31 (2026-06-25): Fase 1 ruteo por mark — sub-pasos extra de HABILITADO.
+//                     Concepto: hojas (MK) que requieren maquinado adicional
+//                     (corte láser, barrenos, cuerdas, fresado, mecanizado, etc)
+//                     declaran ese requerimiento como texto descriptivo en una
+//                     columna nueva 'maquinado'. La sábana de cami-procesos
+//                     muestra un sub-campo dentro de HABILITADO que aplica solo
+//                     cuando la columna está poblada, y usa el texto como
+//                     tooltip al hover. Carga manual desde la sábana (no genera
+//                     OT propia, decisión tomada en las preguntas de arranque
+//                     de Fase 1).
+//                     - CAT_ITEMS crece con col O (idx 14) TRAILING: 'maquinado'.
+//                       Texto descriptivo (ej. "Corte láser", "Barrenos M12+M16",
+//                       "Cuerdas 1/2 NPT + fresado"). Vacío = el MK no lleva
+//                       maquinado adicional (campo N/A en la sábana).
+//                     - handleListaItemsPorProyecto devuelve 'maquinado' en
+//                       cada item (vacío para filas pre-Fase 1).
+//                     - Helper asegurarColumnaMaquinado() idempotente (mismo
+//                       patrón v2.20/v2.30/v0.3/v0.4): sembra header en O1 si
+//                       está vacía, no toca si ya tiene el header correcto,
+//                       loguea sin pisar si tiene otro valor.
+//                     Carga visual: cami-procesos v0.5 (en paralelo).
 // v2.30 (2026-06-25): hotfix de v2.29 — etapas_aplica se mueve a col N (idx 13).
 //                     Diagnostico in-situ revelo que CAT_ITEMS ya tenia "prioridad"
 //                     en col M (idx 12), no documentada en el codigo. El handler
@@ -304,7 +325,12 @@ function handleListaItemsPorProyecto(proyecto) {
       // edición directa en el Sheet.
       // Vive en col N (idx 13) porque col M (idx 12) ya tenía "prioridad" no documentada
       // (descubierto al desplegar v2.29 — el helper abortó sin pisar nada, ver changelog).
-      etapas_aplica:  String(rows[i][13] || '').trim()                 // col 13 (N, v2.30 trailing)
+      etapas_aplica:  String(rows[i][13] || '').trim(),                // col 13 (N, v2.30 trailing)
+      // v2.31: maquinado adicional dentro de HABILITADO (Fase 1 ruteo por mark).
+      // Texto descriptivo; vacío = el MK no lleva maquinado extra (campo N/A en la
+      // sábana). Cami-procesos lo usa para decidir si el sub-campo de HAB aplica,
+      // y muestra el texto como tooltip al hover.
+      maquinado:      String(rows[i][14] || '').trim()                 // col 14 (O, v2.31 trailing)
     });
   }
   return jsonResp({ ok: true, proyecto: proyecto, total: items.length, items: items });
@@ -2037,5 +2063,29 @@ function asegurarColumnaEtapasAplica() {
     Logger.log('Columna 14 ya estaba con header correcto — no se toca');
   } else {
     Logger.log('Columna 14 ya tiene otro valor: ' + JSON.stringify(actual) + ' — NO se sobrescribe. Revisar a mano.');
+  }
+}
+
+// v2.31: helper idempotente para asegurar el header de la columna trailing
+// 'maquinado' (col O = 15, idx 14) en la hoja CAT_ITEMS. Correr UNA vez desde
+// el editor tras pegar/desplegar la versión 2.31. Si la celda O1 ya tiene el
+// header correcto, no toca nada. Las filas existentes (1204 en HARRISON-OWOW
+// + 20 en BASE-FRAMES-2 al momento del deploy) mantienen el campo vacío =
+// 'el MK no lleva maquinado adicional, campo N/A en la sábana'. Solo se
+// pueblan a mano los MK que sí lo requieren (corte láser, barrenos, cuerdas,
+// fresado, mecanizado, etc) con un texto descriptivo libre que cami-procesos
+// muestra como tooltip al hover.
+function asegurarColumnaMaquinado() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName(H_ITEMS);
+  if (!sh) { Logger.log('Hoja CAT_ITEMS no encontrada'); return; }
+  const actual = String(sh.getRange(1, 15).getValue() || '').trim();
+  if (!actual) {
+    sh.getRange(1, 15).setValue('maquinado');
+    Logger.log('Columna 15 (O) sembrada con header "maquinado"');
+  } else if (actual === 'maquinado') {
+    Logger.log('Columna 15 ya estaba con header correcto — no se toca');
+  } else {
+    Logger.log('Columna 15 ya tiene otro valor: ' + JSON.stringify(actual) + ' — NO se sobrescribe. Revisar a mano.');
   }
 }
