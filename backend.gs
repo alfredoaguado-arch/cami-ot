@@ -1,5 +1,5 @@
 // ================================================================
-// CAMI - Apps Script ORDENES DE TRABAJO v2.32
+// CAMI - Apps Script ORDENES DE TRABAJO v2.33
 // Bound al Sheet de OT (CAMI_OT_DB) - ID 12WU13Qp2DPXjaqAMuXg-yYYizuKqMU1K04v0nw0Ud7o
 //
 // REDISENIO COMPLETO vs v1.3:
@@ -48,7 +48,27 @@
 // Folder Drive Firmas:  (subcarpeta automatica dentro del folder de OT)
 // ================================================================
 
-const MODULE_VERSION = '2.32';
+const MODULE_VERSION = '2.33';
+// v2.33 (2026-06-26): Fase 2 ruteo por mark — DEFAULT_PROYECTO. Concepto:
+//                     etapas que se omiten a nivel de TODO el proyecto, sin
+//                     tener que poblar etapas_aplica en cada mark. Caso uso:
+//                     OWOW omite PREP (preparacion de superficies — no aplica
+//                     porque las piezas van directo a acabado sin sandblast).
+//                     Hoy esto requeriria poblar etapas_aplica='ing,hab,sold,
+//                     acab,emb' en los 491 SE; v2.33 lo resuelve con UNA celda
+//                     en CAT_PROYECTOS.
+//                     - CAT_PROYECTOS crece con col G (idx 6) TRAILING:
+//                       'etapas_omitidas' (csv de keys de etapa). Vacío =
+//                       ninguna omitida (default). Poblado con 'prep' → PREP
+//                       no aplica en NINGUN SE de ese proyecto.
+//                     - handleListaProyectos devuelve 'etapas_omitidas' en
+//                       cada proyecto_detalle (vacío para filas pre-Fase 2).
+//                     - Helper asegurarColumnaEtapasOmitidas() idempotente
+//                       (mismo patrón v2.20/v2.30/v2.31).
+//                     Convivencia con Fase 0 en cami-procesos (no aquí —
+//                     backend solo entrega el dato):
+//                       set_efectivo(mark) = si EXPLICITA poblada → override total;
+//                       si vacía → default_del_tipo ∩ no_DEDUCIDA ∩ no_DEFAULT_PROYECTO.
 // v2.32 (2026-06-26): Fase 1.5 — ciclo de vida de la OT en la celda de la sábana.
 //                     handleListaLoteMarks ahora trae dos campos extra DE LA
 //                     CABECERA OT, unidos por folio: 'entrega' (col G idx 6,
@@ -294,7 +314,11 @@ function handleListaProyectos() {
       cliente:    String(rows[i][2] || '').trim(),
       direccion:  String(rows[i][3] || '').trim(),
       supervisor: String(rows[i][4] || '').trim(),
-      modo:       String(rows[i][5] || '').trim().toUpperCase()
+      modo:       String(rows[i][5] || '').trim().toUpperCase(),
+      // v2.33: csv de keys de etapa a omitir en TODO el proyecto (Fase 2 ruteo).
+      // Vacío = default por tipo aplica completo. Poblado con 'prep' → cami-procesos
+      // pinta PREP como N/A para todos los SE de este proyecto, sin tocar marks.
+      etapas_omitidas: String(rows[i][6] || '').trim()   // col G idx 6 (v2.33 trailing)
     });
   }
   // proyectos: array legacy de strings (compatibilidad con frontend pre-Fase B). Deprecated.
@@ -2110,5 +2134,52 @@ function asegurarColumnaMaquinado() {
     Logger.log('Columna 15 ya estaba con header correcto — no se toca');
   } else {
     Logger.log('Columna 15 ya tiene otro valor: ' + JSON.stringify(actual) + ' — NO se sobrescribe. Revisar a mano.');
+  }
+}
+
+// v2.33: helper idempotente para asegurar el header de la columna trailing
+// 'etapas_omitidas' (col G = 7, idx 6) en la hoja CAT_PROYECTOS. Correr UNA
+// vez desde el editor tras pegar/desplegar la versión 2.33. Mismo patrón
+// defensivo que los helpers anteriores: si la celda G1 ya tiene el header
+// correcto, no toca; si tiene otro valor (columna no documentada), aborta
+// con log para revisar a mano (igual que pasó con CAT_ITEMS col M v2.29).
+function asegurarColumnaEtapasOmitidas() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName(H_PROYECTOS);
+  if (!sh) { Logger.log('Hoja CAT_PROYECTOS no encontrada'); return; }
+  const actual = String(sh.getRange(1, 7).getValue() || '').trim();
+  if (!actual) {
+    sh.getRange(1, 7).setValue('etapas_omitidas');
+    Logger.log('Columna 7 (G) sembrada con header "etapas_omitidas"');
+  } else if (actual === 'etapas_omitidas') {
+    Logger.log('Columna 7 ya estaba con header correcto — no se toca');
+  } else {
+    Logger.log('Columna 7 ya tiene otro valor: ' + JSON.stringify(actual) + ' — NO se sobrescribe. Revisar a mano.');
+  }
+}
+
+// v2.33: utilidad de inventario para CAT_PROYECTOS. Correr ANTES del helper
+// para verificar que no hay columnas no documentadas (igual que pasó con
+// CAT_ITEMS col M "prioridad" en v2.29). Loguea las primeras 12 columnas
+// del header y un sample de la primera fila de datos.
+function _inventariarHeadersCatProyectos() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName(H_PROYECTOS);
+  if (!sh) { Logger.log('CAT_PROYECTOS no encontrada'); return; }
+  const lc = sh.getLastColumn();
+  const cols = Math.min(12, sh.getMaxColumns());
+  Logger.log('CAT_PROYECTOS: lastCol=' + lc + ', maxCol=' + sh.getMaxColumns());
+  Logger.log('--- Header (fila 1, hasta col 12) ---');
+  const headers = sh.getRange(1, 1, 1, cols).getValues()[0];
+  headers.forEach(function(h, i) {
+    const letra = String.fromCharCode(65 + i);
+    Logger.log('  Col ' + (i+1) + ' (' + letra + ', idx ' + i + '): ' + JSON.stringify(h));
+  });
+  Logger.log('--- Sample fila 4 (primer proyecto activo) ---');
+  if (sh.getLastRow() >= 4) {
+    const sample = sh.getRange(4, 1, 1, cols).getValues()[0];
+    sample.forEach(function(v, i) {
+      Logger.log('  Col ' + (i+1) + ': ' + JSON.stringify(String(v).substring(0, 60)));
+    });
   }
 }
