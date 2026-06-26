@@ -4,7 +4,11 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>CAMI — Orden de Trabajo</title>
-<!-- v2.26 (2026-06-25): guard anti doble-envio al crear OT. enviarOT marca un flag
+<!-- v2.27 (2026-06-25): "No. OT interna" sugerido. Al elegir proyecto, onProyectoChange
+     precarga #ot-interna con el siguiente consecutivo del proyecto (endpoint
+     siguienteOtInterna, backend v2.26), editable; si el endpoint falla el campo queda
+     como esta (degradacion suave).
+     v2.26 (2026-06-25): guard anti doble-envio al crear OT. enviarOT marca un flag
      _enviandoOT y deshabilita #btn-submit ("Creando…") ANTES de cualquier await
      (antes el boton solo se bloqueaba dentro de generarOT, tras el prechequeo, y un
      doble-click reservaba dos folios -> dos OTs). try/finally re-habilita siempre.
@@ -896,9 +900,24 @@ function onProyectoChange() {
     cargarItemsProyecto(nombre);
     cargarPlanosProyecto(nombre);
     cargarComposicionProyecto(nombre);  // F4: kick off async load (no await aqui)
+    cargarSiguienteOtInterna(nombre);   // v2.27: precarga el consecutivo de OT interna
   } else {
     document.getElementById('item-status').textContent = 'Selecciona un proyecto primero.';
   }
+}
+
+// v2.27: precarga el "No. OT interna" sugerido (siguiente consecutivo del proyecto)
+// desde el backend (siguienteOtInterna). Es una SUGERENCIA editable. Race-guard:
+// solo aplica si el proyecto del form sigue siendo el mismo al volver la respuesta.
+// Degradacion suave: si el endpoint falla (o backend viejo), el campo queda como este.
+async function cargarSiguienteOtInterna(proyecto) {
+  try {
+    const r = await fetch(SCRIPT_URL + '?accion=siguienteOtInterna&proyecto=' + encodeURIComponent(proyecto));
+    const j = await r.json();
+    if (j && j.ok && j.siguiente && document.getElementById('proyecto').value === proyecto) {
+      document.getElementById('ot-interna').value = j.siguiente;
+    }
+  } catch (e) { /* silencioso: sin sugerencia si el endpoint no responde */ }
 }
 
 // F4: carga COMPOSICION del proyecto, agrega qty por componente en _qtyTotalPorMark.
