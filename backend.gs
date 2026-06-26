@@ -1,5 +1,5 @@
 // ================================================================
-// CAMI - Apps Script ORDENES DE TRABAJO v2.35
+// CAMI - Apps Script ORDENES DE TRABAJO v2.36
 // Bound al Sheet de OT (CAMI_OT_DB) - ID 12WU13Qp2DPXjaqAMuXg-yYYizuKqMU1K04v0nw0Ud7o
 //
 // REDISENIO COMPLETO vs v1.3:
@@ -48,7 +48,31 @@
 // Folder Drive Firmas:  (subcarpeta automatica dentro del folder de OT)
 // ================================================================
 
-const MODULE_VERSION = '2.35';
+const MODULE_VERSION = '2.36';
+// v2.36 (2026-06-26): Fase 3 — qty_total para SE en CAT_ITEMS. Caso uso BF2:
+//                     SE-BFG representa 24 instancias del mismo marco. Hoy
+//                     CAT_COMPOSICION expresa qty TOTAL en el proyecto a nivel
+//                     de MK (BFG-4 qty=24 = 24 piezas totales), pero el SE en
+//                     si mismo no tiene forma de declarar cuantas instancias
+//                     hay. Sin eso, la sabana no puede mostrar avance X/Y al
+//                     SE en SOLD/PRE/PREP/ACAB/EMB (caso "soldar 12 de 24
+//                     marcos esta semana").
+//                     - CAT_ITEMS crece con col P (idx 15) TRAILING: 'qty_total'.
+//                       Numero entero. Para SE: cuantas instancias del SE existen
+//                       en el proyecto. Para MK: vacio (no se usa; el total
+//                       sale de CAT_COMPOSICION como hasta ahora).
+//                       Vacio para SE = default 1 (comportamiento legacy OWOW
+//                       donde cada SE es una instancia unica).
+//                     - handleListaItemsPorProyecto devuelve 'qty_total' como
+//                       numero (parseFloat). Vacio queda como ''.
+//                     - Helper asegurarColumnaQtyTotal() idempotente (patron
+//                       v2.20/v2.30/v2.31/v2.33).
+//                     Compatibilidad total con OWOW: los 491 SE quedan con
+//                     qty_total vacio → cami-procesos lo interpreta como 1 →
+//                     identico al comportamiento de hoy. Solo BF2 (y proyectos
+//                     similares con SE fraccionados) requieren poblar el campo.
+//                     Frontend cami-procesos (Sprint 2) usa el dato para extender
+//                     la columna 'Piezas' a SOLD/PRE/PREP/ACAB/EMB.
 // v2.35 (2026-06-26): handleRechazarOT acepta más estados (cancelar OT activa).
 //                     Antes solo se podia rechazar OT PENDIENTE_APROBACION;
 //                     ahora tambien APROBADA y EN_PROCESO. Caso uso: una OT
@@ -403,7 +427,13 @@ function handleListaItemsPorProyecto(proyecto) {
       // Texto descriptivo; vacío = el MK no lleva maquinado extra (campo N/A en la
       // sábana). Cami-procesos lo usa para decidir si el sub-campo de HAB aplica,
       // y muestra el texto como tooltip al hover.
-      maquinado:      String(rows[i][14] || '').trim()                 // col 14 (O, v2.31 trailing)
+      maquinado:      String(rows[i][14] || '').trim(),                // col 14 (O, v2.31 trailing)
+      // v2.36: cantidad total del item en el proyecto. SOLO usado para SE
+      // (instancias del subensamble). Para MK queda vacio — su total se infiere
+      // de CAT_COMPOSICION (suma de qty por componente) como siempre.
+      // Vacio para SE = default 1 (caso OWOW: cada SE es una instancia unica).
+      // Caso BF2: SE-BFG.qty_total = 24 (24 marcos identicos).
+      qty_total:      _parseQtyTotal(rows[i][15])                      // col 15 (P, v2.36 trailing)
     });
   }
   return jsonResp({ ok: true, proyecto: proyecto, total: items.length, items: items });
@@ -2238,6 +2268,56 @@ function asegurarColumnaMaquinado() {
   } else {
     Logger.log('Columna 15 ya tiene otro valor: ' + JSON.stringify(actual) + ' — NO se sobrescribe. Revisar a mano.');
   }
+}
+
+// v2.36: parsea qty_total de la celda. Devuelve numero si parseable y > 0;
+// si es vacio, 0, o no numerico, devuelve '' (el frontend lo interpreta como
+// default 1). Mantiene la respuesta JSON predecible (numero o string vacio).
+function _parseQtyTotal(raw) {
+  if (raw === '' || raw == null) return '';
+  const n = Number(raw);
+  if (!isFinite(n) || n <= 0) return '';
+  return n;
+}
+
+// v2.36: helper idempotente para asegurar el header de la columna trailing
+// 'qty_total' (col P = 16, idx 15) en la hoja CAT_ITEMS. Correr UNA vez desde
+// el editor tras desplegar la version 2.36. Patron defensivo identico a los
+// helpers v2.30/v2.31: si la celda ya tiene otro valor (columna no documentada
+// como la "prioridad" que tenia col M), aborta sin pisar.
+// Las filas existentes mantienen el campo vacio = default 1 en el frontend.
+// Solo se pueblan a mano los SE con multiples instancias (BF2 SE-BFG=24, etc).
+function asegurarColumnaQtyTotal() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName(H_ITEMS);
+  if (!sh) { Logger.log('Hoja CAT_ITEMS no encontrada'); return; }
+  const actual = String(sh.getRange(1, 16).getValue() || '').trim();
+  if (!actual) {
+    sh.getRange(1, 16).setValue('qty_total');
+    Logger.log('Columna 16 (P) sembrada con header "qty_total"');
+  } else if (actual === 'qty_total') {
+    Logger.log('Columna 16 ya estaba con header correcto — no se toca');
+  } else {
+    Logger.log('Columna 16 ya tiene otro valor: ' + JSON.stringify(actual) + ' — NO se sobrescribe. Revisar a mano.');
+  }
+}
+
+// v2.36: utilidad de inventario para CAT_ITEMS. Correr ANTES del helper para
+// confirmar que las cols P/Q estan libres (las filas existentes pueden tener
+// columnas no documentadas, como nos paso con CAT_ITEMS col M "prioridad").
+function _inventariarHeadersCatItems() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName(H_ITEMS);
+  if (!sh) { Logger.log('CAT_ITEMS no encontrada'); return; }
+  const lc = sh.getLastColumn();
+  const cols = Math.min(20, sh.getMaxColumns());
+  Logger.log('CAT_ITEMS: lastCol=' + lc + ', maxCol=' + sh.getMaxColumns());
+  Logger.log('--- Header (fila 1, hasta col 20) ---');
+  const headers = sh.getRange(1, 1, 1, cols).getValues()[0];
+  headers.forEach(function(h, i) {
+    const letra = String.fromCharCode(65 + i);
+    Logger.log('  Col ' + (i+1) + ' (' + letra + ', idx ' + i + '): ' + JSON.stringify(h));
+  });
 }
 
 // v2.33: helper idempotente para asegurar el header de la columna trailing
