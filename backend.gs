@@ -1,5 +1,5 @@
 // ================================================================
-// CAMI - Apps Script ORDENES DE TRABAJO v2.29
+// CAMI - Apps Script ORDENES DE TRABAJO v2.30
 // Bound al Sheet de OT (CAMI_OT_DB) - ID 12WU13Qp2DPXjaqAMuXg-yYYizuKqMU1K04v0nw0Ud7o
 //
 // REDISENIO COMPLETO vs v1.3:
@@ -48,7 +48,23 @@
 // Folder Drive Firmas:  (subcarpeta automatica dentro del folder de OT)
 // ================================================================
 
-const MODULE_VERSION = '2.29';
+const MODULE_VERSION = '2.30';
+// v2.30 (2026-06-25): hotfix de v2.29 — etapas_aplica se mueve a col N (idx 13).
+//                     Diagnostico in-situ revelo que CAT_ITEMS ya tenia "prioridad"
+//                     en col M (idx 12), no documentada en el codigo. El handler
+//                     v2.29 leia rows[i][12] (= "Priority 1", no etapas) y el helper
+//                     trato de sembrar header sobre "prioridad" — abortó con razón
+//                     ("Columna 13 ya tiene otro valor: prioridad — NO se sobrescribe").
+//                     Como nadie consumia 'etapas_aplica' aun (cami-procesos no se
+//                     habia tocado), el deploy de v2.29 no rompio nada en produccion;
+//                     este v2.30 corrige antes de armar consumidor downstream.
+//                     ANOTACION (revisar despues, NO en este commit): CAT_ITEMS col L
+//                     (idx 11) tiene header "origen" pero contiene valores tipo
+//                     "Priority 1" segun la fila 2 sampleada. El handler devuelve
+//                     `origen: rows[i][11]` que en realidad es prioridad disfrazada.
+//                     Ningun frontend consume 'origen' activamente, asi que no afecta
+//                     produccion, pero el catalogo y el codigo estan desalineados.
+//                     Resolverlo en un sprint aparte de limpieza de catalogo.
 // v2.29 (2026-06-25): Fase 0 de ruteo por mark — soporte para que cada mark
 //                     declare a qué etapas pasa, para que la sábana de
 //                     cami-procesos pinte como N/A las que no aplican y el
@@ -281,12 +297,14 @@ function handleListaItemsPorProyecto(proyecto) {
       es_subensamble: String(rows[i][8] || '').trim().toUpperCase(),   // col 8 'SI'/'NO'
       num_plano:      String(rows[i][10] || '').trim(),                // col 10 (string completo, puede traer varios)
       origen:         String(rows[i][11] || '').trim(),                // col 11
-      // v2.29: csv de keys de etapa de la sábana (ing|hab|pre|sold|prep|acab|emb).
+      // v2.30: csv de keys de etapa de la sábana (ing|hab|pre|sold|prep|acab|emb).
       // Vacío = aplican todas las etapas del tipo (SE: ing,pre,sold,prep,acab,emb; MK: hab).
       // Si poblado: override total — solo esas etapas aplican (la lógica DEDUCIDA y el
       // DEFAULT_PROYECTO de cami-procesos se ignoran para ese mark). Mantenimiento por
       // edición directa en el Sheet.
-      etapas_aplica:  String(rows[i][12] || '').trim()                 // col 12 (M, v2.29 trailing)
+      // Vive en col N (idx 13) porque col M (idx 12) ya tenía "prioridad" no documentada
+      // (descubierto al desplegar v2.29 — el helper abortó sin pisar nada, ver changelog).
+      etapas_aplica:  String(rows[i][13] || '').trim()                 // col 13 (N, v2.30 trailing)
     });
   }
   return jsonResp({ ok: true, proyecto: proyecto, total: items.length, items: items });
@@ -1998,24 +2016,26 @@ function asegurarColumnaTitulo() {
   }
 }
 
-// v2.29: helper idempotente para asegurar el header de la columna trailing
-// 'etapas_aplica' (col M = 13, idx 12) en la hoja CAT_ITEMS. Correr UNA vez
-// desde el editor tras pegar/desplegar la version 2.29. Si la celda M1 ya tiene
+// v2.30: helper idempotente para asegurar el header de la columna trailing
+// 'etapas_aplica' (col N = 14, idx 13) en la hoja CAT_ITEMS. Correr UNA vez
+// desde el editor tras pegar/desplegar la version 2.30. Si la celda N1 ya tiene
 // el header correcto, no toca nada. Las filas existentes (1204 en HARRISON-OWOW
 // + 20 en BASE-FRAMES-2 al momento del deploy) mantienen el campo vacío =
 // 'aplican todas las etapas del tipo'. Solo se pueblan a mano las excepciones
 // (los 12 embed plates de OWOW con 'ing,hab,sold,acab,emb' para forzar SOLD).
+// Nota: en v2.29 esto apuntaba a col M (idx 12), pero col M ya tenía "prioridad"
+// no documentada — el helper abortó correctamente sin pisar. v2.30 mueve a col N.
 function asegurarColumnaEtapasAplica() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sh = ss.getSheetByName(H_ITEMS);
   if (!sh) { Logger.log('Hoja CAT_ITEMS no encontrada'); return; }
-  const actual = String(sh.getRange(1, 13).getValue() || '').trim();
+  const actual = String(sh.getRange(1, 14).getValue() || '').trim();
   if (!actual) {
-    sh.getRange(1, 13).setValue('etapas_aplica');
-    Logger.log('Columna 13 (M) sembrada con header "etapas_aplica"');
+    sh.getRange(1, 14).setValue('etapas_aplica');
+    Logger.log('Columna 14 (N) sembrada con header "etapas_aplica"');
   } else if (actual === 'etapas_aplica') {
-    Logger.log('Columna 13 ya estaba con header correcto — no se toca');
+    Logger.log('Columna 14 ya estaba con header correcto — no se toca');
   } else {
-    Logger.log('Columna 13 ya tiene otro valor: ' + JSON.stringify(actual) + ' — NO se sobrescribe. Revisar a mano.');
+    Logger.log('Columna 14 ya tiene otro valor: ' + JSON.stringify(actual) + ' — NO se sobrescribe. Revisar a mano.');
   }
 }
