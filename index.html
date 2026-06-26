@@ -508,9 +508,9 @@ textarea{resize:vertical;min-height:60px}
 <!-- Modal: Motivo de rechazo -->
 <div id="rechazo-modal" class="modal-overlay">
   <div class="modal-box">
-    <div class="modal-header"><strong>MOTIVO DE RECHAZO</strong></div>
+    <div class="modal-header"><strong id="rechazo-modal-titulo">MOTIVO DE RECHAZO</strong></div>
     <div class="modal-body">
-      <p>Indica por que rechazas esta OT. El motivo quedara registrado.</p>
+      <p id="rechazo-modal-intro">Indica por que rechazas esta OT. El motivo quedara registrado.</p>
       <label class="fl">Motivo <span class="req">*</span></label>
       <textarea id="rechazo-motivo" placeholder="Ej: Faltan especificaciones de soldadura" rows="3"></textarea>
       <div id="rechazo-error" style="color:#A32D2D;font-size:11px;margin-top:8px;min-height:14px"></div>
@@ -2336,10 +2336,14 @@ function abrirAprobarModal(idx) {
       </div>`;
 
   const accionPrimaria = flujoNuevo ? 'Recibir OT' : 'Aprobar OT';
-  // Rechazo solo aplica a flujo legacy (la OT aun no estaba aprobada).
-  const botonRechazo = flujoNuevo
-    ? ''
-    : `<button class="btn-rechazar" onclick="abrirRechazoModal()" style="flex:1;padding:10px">Rechazar</button>`;
+  // v2.35: el boton secundario adapta su etiqueta segun el estado.
+  //   PENDIENTE_APROBACION: "Rechazar" (no se aprobo todavia).
+  //   APROBADA: "Cancelar OT" (ya aprobada, esta opcion permite cancelar
+  //   el trabajo si el plazo se vencio o ya no se va a fabricar).
+  // El handler de backend (rechazarOT v2.35) acepta los dos casos.
+  const txtCancelar = flujoNuevo ? 'Cancelar OT' : 'Rechazar';
+  const botonRechazo =
+    `<button class="btn-rechazar" onclick="abrirRechazoModal()" style="flex:1;padding:10px">${txtCancelar}</button>`;
 
   body.innerHTML = `
     <div class="detail-grid">
@@ -2620,7 +2624,22 @@ function mostrarDialogoOTRecibida(folio, pdfUrl, esRecepcion) {
 }
 
 function abrirRechazoModal() {
+  // v2.35: adapta el texto segun el estado actual de la OT en aprobacion.
+  //   PENDIENTE_APROBACION -> "Rechazar" (no se aprobo todavia).
+  //   APROBADA / EN_PROCESO -> "Cancelar OT" (ya aprobada, cancelacion post-aprob).
+  const esPostAprob = _otEnAprobacion &&
+    (_otEnAprobacion.estado === 'APROBADA' || _otEnAprobacion.estado === 'EN_PROCESO');
+  document.getElementById('rechazo-modal-titulo').textContent =
+    esPostAprob ? 'CANCELAR OT' : 'MOTIVO DE RECHAZO';
+  document.getElementById('rechazo-modal-intro').textContent =
+    esPostAprob
+      ? 'Esta OT ya esta aprobada. Cancelarla la marca como rechazada (el motivo queda registrado y la OT preserva sus firmas previas para auditoria).'
+      : 'Indica por que rechazas esta OT. El motivo quedara registrado.';
+  document.getElementById('btn-confirmar-rechazo').textContent =
+    esPostAprob ? 'Confirmar Cancelacion' : 'Confirmar Rechazo';
   document.getElementById('rechazo-motivo').value = '';
+  document.getElementById('rechazo-motivo').placeholder =
+    esPostAprob ? 'Ej: Plazo de entrega vencido, se cancela y se crea OT nueva' : 'Ej: Faltan especificaciones de soldadura';
   document.getElementById('rechazo-error').textContent = '';
   document.getElementById('rechazo-modal').classList.add('show');
   setTimeout(() => document.getElementById('rechazo-motivo').focus(), 100);
@@ -2634,6 +2653,8 @@ async function confirmarRechazo() {
   if (!motivo) { err.textContent = 'El motivo es obligatorio'; return; }
   if (!_otEnAprobacion) return;
   const token = getToken(); if (!token) { abrirReloginModal(); return; }
+  const esPostAprob = (_otEnAprobacion.estado === 'APROBADA' || _otEnAprobacion.estado === 'EN_PROCESO');
+  const txtBtnIni = esPostAprob ? 'Confirmar Cancelacion' : 'Confirmar Rechazo';
   btn.disabled = true; btn.textContent = 'Enviando...';
   try {
     const r = await fetch(SCRIPT_URL, {
@@ -2644,12 +2665,12 @@ async function confirmarRechazo() {
     if (!data.ok) {
       if (/sesion/i.test(data.error || '')) { cerrarRechazoModal(); cerrarAprobarModal(); abrirReloginModal(); return; }
       err.textContent = data.error || 'Error';
-      btn.disabled = false; btn.textContent = 'Confirmar Rechazo'; return;
+      btn.disabled = false; btn.textContent = txtBtnIni; return;
     }
     cerrarRechazoModal(); cerrarAprobarModal();
-    showToast('OT rechazada.', 'ok');
+    showToast(esPostAprob ? 'OT cancelada.' : 'OT rechazada.', 'ok');
     cargarPorAprobar();
-    btn.disabled = false; btn.textContent = 'Confirmar Rechazo';
+    btn.disabled = false; btn.textContent = txtBtnIni;
   } catch (e) {
     err.textContent = 'Error: ' + e.message;
     btn.disabled = false; btn.textContent = 'Confirmar Rechazo';
