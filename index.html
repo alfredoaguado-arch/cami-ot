@@ -1063,6 +1063,49 @@ function esSubensamble(item) {
   return String(item && item.es_subensamble || '').toUpperCase() === 'SI';
 }
 
+// Fase 0 ruteo por mark (jun-2026): mapea el texto de etapa del select (uppercase,
+// con o sin acentos corridos) al 'key' de la sábana de cami-procesos. Si la etapa
+// no encaja en ningún canal conocido, devuelve '' y _itemAplicaEnEtapa no filtra
+// por ruta (defensivo: no escondemos items por etapas raras o nuevas).
+function _etapaKeyDe(etapaUpper) {
+  if (!etapaUpper) return '';
+  if (etapaUpper.includes('INGEN'))                                                       return 'ing';
+  if (etapaUpper.includes('HABILIT'))                                                     return 'hab';
+  if (etapaUpper.includes('ENSAMBL'))                                                     return 'pre';
+  if (etapaUpper.includes('SOLD'))                                                        return 'sold';
+  if (etapaUpper.includes('SUPERFIC') || etapaUpper.includes('PREPARAC') || etapaUpper.includes('SANDBLAST')) return 'prep';
+  if (etapaUpper.includes('ACABAD')   || etapaUpper.includes('PINTUR'))                   return 'acab';
+  if (etapaUpper.includes('EMBAL')    || etapaUpper.includes('EMBARQ'))                   return 'emb';
+  return '';
+}
+
+// ¿El item aparece en el chip-picker para la etapa actual?
+// Espejo de stageApplies de cami-procesos para que la sábana y el chip-picker no
+// disientan: una pieza que la sábana muestra como N/A en X tampoco debe poder
+// elegirse en una OT de X. Tres pasos en cascada — filtro de tipo (ortogonal),
+// EXPLÍCITA filtrada al tipo, DEDUCIDA por composición (SE con ≤1 hijo salta
+// pre+sold). Silencioso: si false, el item no aparece (no warning).
+function _itemAplicaEnEtapa(item, etapaKey) {
+  if (!etapaKey) return true;  // sin canal conocido → no filtramos
+  const esSE = esSubensamble(item);
+  const STAGES_SE = ['ing','pre','sold','prep','acab','emb'];
+  // 1) Filtro de tipo: el override NUNCA cambia el tipo del row.
+  if (esSE && STAGES_SE.indexOf(etapaKey) === -1) return false;  // SE en HAB → no
+  if (!esSE && etapaKey !== 'hab') return false;                 // MK fuera de HAB → no
+  // 2) EXPLÍCITA (override total dentro del tipo).
+  const explicita = String(item.etapas_aplica || '').trim();
+  if (explicita) {
+    const set = new Set(explicita.split(',').map(s => s.trim().toLowerCase()).filter(s => s));
+    return set.has(etapaKey);
+  }
+  // 3) DEDUCIDA (solo SE): ≤1 hijo en COMPOSICION ⇒ salta pre+sold.
+  if (esSE && (etapaKey === 'pre' || etapaKey === 'sold')) {
+    const hijos = (_hijosPorSE[item.label] || []).length;
+    if (hijos <= 1) return false;
+  }
+  return true;
+}
+
 async function cargarItemsProyecto(proyecto) {
   const status = document.getElementById('item-status');
   const busqueda = document.getElementById('item-busqueda');
@@ -1097,19 +1140,18 @@ function filtrarItems() {
   const cont = document.getElementById('item-resultados');
   if (!q || !_itemsCache.length) { cont.style.display = 'none'; return; }
 
-  // F2/F6: el selector filtra por tipo de mark segun la etapa.
-  //   HABILITADO -> solo hojas (es_subensamble='NO'), porque se fabrican piezas atomicas.
-  //   ENSAMBLE   -> solo sub-ensambles (es_subensamble='SI'), porque se arman ensembles.
-  //   resto      -> sin filtro (compatibilidad con etapas existentes).
-  const etapa = (document.getElementById('etapa').value || '').toUpperCase();
-  const soloHojas = etapa === 'HABILITADO';
-  const soloSubs  = etapa === 'ENSAMBLE';
+  // F2/F6 + Fase 0 ruteo por mark: el selector filtra por la RUTA del mark, no
+  // solo por su tipo. _itemAplicaEnEtapa internaliza filtro de tipo + EXPLÍCITA
+  // (CAT_ITEMS.etapas_aplica) + DEDUCIDA (SE con ≤1 hijo salta pre+sold). Espejo
+  // exacto de stageApplies en cami-procesos: si una pieza es N/A en la sábana
+  // para la etapa X, tampoco aparece en el chip-picker para la OT de X.
+  const etapaUpper = (document.getElementById('etapa').value || '').toUpperCase();
+  const etapaKey   = _etapaKeyDe(etapaUpper);
 
   // Case-sensitive intencional: en Tekla A1 (L6X6X3/8) y a1 (L6X3-1/2X1/2) son piezas distintas.
   // El supervisor lee el label en el plano con su caso exacto y debe encontrarlo igual.
   const matches = _itemsCache.filter(it => {
-    if (soloHojas && !esMarkDeHoja(it)) return false;
-    if (soloSubs  && !esSubensamble(it)) return false;
+    if (!_itemAplicaEnEtapa(it, etapaKey)) return false;
     return (it.mark || '').includes(q) ||
            (it.label || '').includes(q) ||
            (it.descripcion || '').includes(q) ||
