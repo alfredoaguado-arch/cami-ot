@@ -1,5 +1,5 @@
 // ================================================================
-// CAMI - Apps Script ORDENES DE TRABAJO v2.31
+// CAMI - Apps Script ORDENES DE TRABAJO v2.32
 // Bound al Sheet de OT (CAMI_OT_DB) - ID 12WU13Qp2DPXjaqAMuXg-yYYizuKqMU1K04v0nw0Ud7o
 //
 // REDISENIO COMPLETO vs v1.3:
@@ -48,7 +48,19 @@
 // Folder Drive Firmas:  (subcarpeta automatica dentro del folder de OT)
 // ================================================================
 
-const MODULE_VERSION = '2.31';
+const MODULE_VERSION = '2.32';
+// v2.32 (2026-06-26): Fase 1.5 — ciclo de vida de la OT en la celda de la sábana.
+//                     handleListaLoteMarks ahora trae dos campos extra DE LA
+//                     CABECERA OT, unidos por folio: 'entrega' (col G idx 6,
+//                     fecha de entrega comprometida) y 'pdf_url' (col Q idx 16,
+//                     URL del PDF en Drive). El frontend de cami-procesos los
+//                     usa para (a) marcar 'corte' como en_proceso/vencido segun
+//                     estado_lote+entrega+hoy, y (b) volver el badge 'OT' un
+//                     link clickeable al PDF. Solo lectura, sin tocar flujo de
+//                     creación/cierre.
+//                     Cosmético gratis: ping responde correcto ahora (v2.31
+//                     había quedado sin bumpear MODULE_VERSION al pegar en el
+//                     editor — desincronizado del header línea 2).
 // v2.31 (2026-06-25): Fase 1 ruteo por mark — sub-pasos extra de HABILITADO.
 //                     Concepto: hojas (MK) que requieren maquinado adicional
 //                     (corte láser, barrenos, cuerdas, fresado, mecanizado, etc)
@@ -374,17 +386,25 @@ function handleListaLoteMarks(proyecto) {
   const shLote = ss.getSheetByName(H_LOTE_MARKS);
   if (!shLote) return jsonResp({ ok: true, proyecto: proyecto, total: 0, marks: [] });
 
-  // Mapa folio -> {etapa, estado_ot} desde la cabecera OT (col 4 etapa, col 11 estado)
-  const etapaPorFolio = {};
-  const estadoPorFolio = {};
+  // Mapa folio -> {etapa, estado_ot, entrega, pdf_url} desde la cabecera OT.
+  // v2.32: agregamos entrega (col G idx 6) y pdf_url (col Q idx 16) para que
+  // cami-procesos pueda pintar el ciclo de vida de la OT en la celda 'corte'
+  // (en proceso → terminado → vencido) y linkear al PDF.
+  const etapaPorFolio   = {};
+  const estadoPorFolio  = {};
+  const entregaPorFolio = {};
+  const pdfUrlPorFolio  = {};
   const shOT = ss.getSheetByName(H_OT);
   if (shOT) {
     const ot = shOT.getDataRange().getValues();
     for (let i = 1; i < ot.length; i++) {
       const folio = String(ot[i][0] || '').trim();
       if (!folio) continue;
-      etapaPorFolio[folio]  = String(ot[i][3]  || '').trim();   // col 4 etapa
-      estadoPorFolio[folio] = String(ot[i][10] || '').trim();   // col 11 estado
+      etapaPorFolio[folio]   = String(ot[i][3]  || '').trim();   // col D idx 3  etapa
+      estadoPorFolio[folio]  = String(ot[i][10] || '').trim();   // col K idx 10 estado
+      const en = ot[i][6];                                        // col G idx 6  entrega
+      entregaPorFolio[folio] = en ? (en instanceof Date ? en.toISOString() : String(en)) : '';
+      pdfUrlPorFolio[folio]  = String(ot[i][16] || '').trim();   // col Q idx 16 pdf_url
     }
   }
 
@@ -404,8 +424,11 @@ function handleListaLoteMarks(proyecto) {
       estado_lote:  String(rows[i][6] || '').trim().toUpperCase(), // col 7 CREADO/CERRADO
       cerrado_por:  String(rows[i][7] || '').trim(),            // col 8
       fecha_cierre: fc ? (fc instanceof Date ? fc.toISOString() : String(fc)) : '',
-      etapa:        etapaPorFolio[folio]  || '',
-      estado_ot:    estadoPorFolio[folio] || ''
+      etapa:        etapaPorFolio[folio]   || '',
+      estado_ot:    estadoPorFolio[folio]  || '',
+      // v2.32: ciclo de vida en la celda de la sábana
+      entrega:      entregaPorFolio[folio] || '',   // fecha comprometida (ISO o '')
+      pdf_url:      pdfUrlPorFolio[folio]  || ''    // link al PDF en Drive (vacío si reservada sin PDF)
     });
   }
   return jsonResp({ ok: true, proyecto: proyecto, total: marks.length, marks: marks });
