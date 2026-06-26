@@ -1,5 +1,5 @@
 // ================================================================
-// CAMI - Apps Script ORDENES DE TRABAJO v2.25
+// CAMI - Apps Script ORDENES DE TRABAJO v2.26
 // Bound al Sheet de OT (CAMI_OT_DB) - ID 12WU13Qp2DPXjaqAMuXg-yYYizuKqMU1K04v0nw0Ud7o
 //
 // REDISENIO COMPLETO vs v1.3:
@@ -48,7 +48,16 @@
 // Folder Drive Firmas:  (subcarpeta automatica dentro del folder de OT)
 // ================================================================
 
-const MODULE_VERSION = '2.25';
+const MODULE_VERSION = '2.26';
+// v2.26 (2026-06-25): endpoint NUEVO siguienteOtInterna (GET publico) — sugiere el
+//                     siguiente consecutivo de 'No. OT interna' por proyecto. SOLO
+//                     LECTURA: escanea la hoja OT, filtra col C (proyecto), parsea
+//                     col F (ot_interna) contando solo celdas de digitos PUROS
+//                     (/^\d+$/; ignora vacios y no-numericos), y devuelve max+1 con
+//                     formato '0N' (padStart 2). El front lo precarga en #ot-interna
+//                     al elegir proyecto (editable, best-effort: si dos coinciden,
+//                     el supervisor lo edita; es etiqueta humana, no llave). No
+//                     toca folio, metadata ni el flujo de crear/cerrar.
 // v2.25 (2026-06-24): NESTEOS DE CORTE como documentos del lote (placas Y barras),
 //                     con el MISMO mecanismo que los planos (supera el enfoque de
 //                     barras-por-perfil de v2.23). Dos cambios:
@@ -164,6 +173,7 @@ function doGet(e) {
     if (accion === 'pdfCorteBarras')        return handlePdfCorteBarras(e.parameter.proyecto || '', e.parameter.folio || '');
     if (accion === 'listaPlanosPorProyecto') return handleListaPlanosPorProyecto(e.parameter.proyecto || '');
     if (accion === 'listaChecklist')   return handleListaChecklist(e.parameter.etapa || '');
+    if (accion === 'siguienteOtInterna') return handleSiguienteOtInterna(e.parameter.proyecto || '');
     if (accion === 'listaEtapas')      return handleListaEtapas();
     if (accion === 'getLogo')          return handleGetLogo();
     if (accion === 'verificar')        return handleVerificar(e.parameter.folio || '');
@@ -484,6 +494,32 @@ function handleListaPlanosPorProyecto(proyecto) {
     });
   }
   return jsonResp({ ok: true, proyecto: proyecto, total: planos.length, planos: planos });
+}
+
+// ── siguienteOtInterna (v2.26 — GET publico, SOLO LECTURA) ─────────
+// Sugiere el siguiente 'No. OT interna' del proyecto = max(ot_interna numerica) + 1,
+// con formato '0N'. Escanea la hoja OT: col C (idx 2) = proyecto, col F (idx 5) =
+// ot_interna. Solo cuentan celdas de DIGITOS PUROS (/^\d+$/): '01'->1; vacios y
+// no-numericos ('OT-3', '2 urgente') se ignoran. Sin OTs (o todo no-numerico) -> '01'.
+// Es una SUGERENCIA editable (no llave, sin lock): si dos coinciden, el supervisor edita.
+function handleSiguienteOtInterna(proyecto) {
+  proyecto = String(proyecto || '').trim();
+  if (!proyecto) return jsonResp({ ok: false, error: 'Proyecto requerido' });
+
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(H_OT);
+  if (!sh) return jsonResp({ ok: true, proyecto: proyecto, max: 0, siguiente: '01' });
+
+  const rows = sh.getDataRange().getValues();
+  let maxN = 0;
+  for (let i = 1; i < rows.length; i++) {
+    if (String(rows[i][2] || '').trim() !== proyecto) continue;   // col C proyecto
+    const raw = String(rows[i][5] || '').trim();                  // col F ot_interna
+    if (!/^\d+$/.test(raw)) continue;                             // ignora vacios y no-numericos
+    const n = parseInt(raw, 10);
+    if (!isNaN(n) && n > maxN) maxN = n;
+  }
+  const siguiente = String(maxN + 1).padStart(2, '0');
+  return jsonResp({ ok: true, proyecto: proyecto, max: maxN, siguiente: siguiente });
 }
 
 function handleListaEtapas() {
