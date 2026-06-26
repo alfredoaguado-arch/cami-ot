@@ -1,5 +1,5 @@
 // ================================================================
-// CAMI - Apps Script ORDENES DE TRABAJO v2.33
+// CAMI - Apps Script ORDENES DE TRABAJO v2.34
 // Bound al Sheet de OT (CAMI_OT_DB) - ID 12WU13Qp2DPXjaqAMuXg-yYYizuKqMU1K04v0nw0Ud7o
 //
 // REDISENIO COMPLETO vs v1.3:
@@ -48,7 +48,31 @@
 // Folder Drive Firmas:  (subcarpeta automatica dentro del folder de OT)
 // ================================================================
 
-const MODULE_VERSION = '2.33';
+const MODULE_VERSION = '2.34';
+// v2.34 (2026-06-26): Sprint 1 — desacoplar firmas de creación y recepción.
+//                     Hoy las 2 firmas (aprobador + receptor) se exigen JUNTAS
+//                     al aprobar; imposible cuando el supervisor crea la OT
+//                     remoto y un responsable distinto la recibe en planta.
+//                     v2.34 introduce un nuevo flujo opcional:
+//                       - handleCrearOT acepta 'firma_supervisor' (PNG b64).
+//                         Si llega, la OT pasa DIRECTO a 'APROBADA' (saltea
+//                         PENDIENTE_APROBACION), la firma se persiste con
+//                         tipo='APROBACION' del creador, y aprobado_por +
+//                         fecha_aprob quedan seteados.
+//                       - handleAprobarOT detecta el estado actual y enruta:
+//                         · PENDIENTE_APROBACION (vieja): flujo legacy — exige
+//                           firma aprobador + firma recepción + receptor.
+//                           Pasa a APROBADA (sin cambios).
+//                         · APROBADA (nueva, con firma supervisor previa):
+//                           solo exige firma_recepción + receptor_nombre.
+//                           Pasa a EN_PROCESO (lista para cierre en planta).
+//                       - handleListarPorAprobar amplía a PENDIENTE_APROBACION
+//                         + APROBADA (las dos esperan acción del receptor).
+//                         El front filtra/etiqueta según el estado.
+//                     Compatibilidad total: OT viejas sin firma_supervisor
+//                     siguen el flujo legacy (PENDIENTE_APROBACION → APROBADA).
+//                     OT nuevas con firma_supervisor saltan al flujo nuevo
+//                     (APROBADA → EN_PROCESO al recibir en planta).
 // v2.33 (2026-06-26): Fase 2 ruteo por mark — DEFAULT_PROYECTO. Concepto:
 //                     etapas que se omiten a nivel de TODO el proyecto, sin
 //                     tener que poblar etapas_aplica en cada mark. Caso uso:
@@ -1327,6 +1351,13 @@ function handleCrearOT(data) {
   const tituloActividad = String(data.titulo_actividad || '').trim().slice(0, 200);
   const materiales  = Array.isArray(data.materiales) ? data.materiales : [];
   const pdfB64      = String(data.pdf || '').trim();
+  // v2.34: firma del supervisor capturada al crear la OT (PNG b64 opcional).
+  // Si llega, la OT pasa directo a 'APROBADA' (saltea PENDIENTE_APROBACION) y
+  // la firma se persiste con tipo='APROBACION', firmante=creador. Esto permite
+  // que el supervisor firme remoto y solo se exija la firma de recepción al
+  // receptor en planta (handleAprobarOT detecta el estado y enruta).
+  const firmaSupervisorB64 = String(data.firma_supervisor || '').trim();
+  const hayFirmaSupervisor = !!firmaSupervisorB64;
 
   if (!fecha)        return jsonResp({ ok: false, error: 'Fecha requerida' });
   if (!proyecto)     return jsonResp({ ok: false, error: 'Proyecto requerido' });
@@ -1340,9 +1371,19 @@ function handleCrearOT(data) {
 
   try {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
-    const estadoInicial   = REQUIERE_APROBACION ? 'PENDIENTE_APROBACION' : 'APROBADA';
-    const aprobadoPorAuto = REQUIERE_APROBACION ? '' : 'SISTEMA-AUTO';
-    const fechaAprobAuto  = REQUIERE_APROBACION ? '' : new Date();
+    // v2.34: si hay firma_supervisor, la OT salta a APROBADA directo (el creador
+    // queda como aprobador, fecha_aprob = ahora). Sin firma_supervisor, comportamiento
+    // legacy basado en el flag REQUIERE_APROBACION.
+    let estadoInicial, aprobadoPorAuto, fechaAprobAuto;
+    if (hayFirmaSupervisor) {
+      estadoInicial   = 'APROBADA';
+      aprobadoPorAuto = usuario.nombre;
+      fechaAprobAuto  = new Date();
+    } else {
+      estadoInicial   = REQUIERE_APROBACION ? 'PENDIENTE_APROBACION' : 'APROBADA';
+      aprobadoPorAuto = REQUIERE_APROBACION ? '' : 'SISTEMA-AUTO';
+      fechaAprobAuto  = REQUIERE_APROBACION ? '' : new Date();
+    }
 
     const shOT = ss.getSheetByName(H_OT);
     if (!shOT) return jsonResp({ ok: false, error: 'Hoja OT no encontrada' });
@@ -1421,8 +1462,14 @@ function handleCrearOT(data) {
 
     // 3. Log
     appendLog(ss, folio, 'CREADA', usuario.nombre, '');
-    if (!REQUIERE_APROBACION) {
+    if (!REQUIERE_APROBACION && !hayFirmaSupervisor) {
       appendLog(ss, folio, 'APROBADA', 'SISTEMA-AUTO', 'Aprobacion automatica (REQUIERE_APROBACION=false)');
+    }
+    // v2.34: si se firmó al crear, guardar firma y loguear APROBADA por el creador.
+    let idFirmaSupervisor = '';
+    if (hayFirmaSupervisor) {
+      idFirmaSupervisor = guardarFirma(ss, folio, 'APROBACION', usuario.nombre, firmaSupervisorB64);
+      appendLog(ss, folio, 'APROBADA', usuario.nombre, idFirmaSupervisor + ' | firma_al_crear');
     }
 
     // 4. PDF en Drive
@@ -1475,7 +1522,14 @@ function handleCrearOT(data) {
       shOT.getRange(filaOT, 17).setValue(pdfUrl);
     }
 
-    return jsonResp({ ok: true, folio: folio, url: pdfUrl, usuario: usuario.nombre });
+    return jsonResp({
+      ok: true,
+      folio: folio,
+      url: pdfUrl,
+      usuario: usuario.nombre,
+      estado: estadoInicial,                        // v2.34: el front lo necesita para enrutar UI
+      id_firma_supervisor: idFirmaSupervisor || ''  // v2.34: para que el front pueda inyectar al PDF si elige
+    });
 
   } catch (err) {
     return jsonResp({ ok: false, error: 'Error al crear OT: ' + err.message });
@@ -1567,8 +1621,12 @@ function handleListarPorAprobar(data) {
 
   try {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
+    // v2.34: incluye APROBADA tambien (OTs creadas con firma_supervisor que
+    // esperan recepcion en planta). El front distingue por estado:
+    //   PENDIENTE_APROBACION -> UI clasica de "Aprobar y recibir" (2 firmas).
+    //   APROBADA             -> UI nueva de "Recibir en planta" (1 firma).
     const ots = leerOTsConDetalle(ss, function(estado) {
-      return estado === 'PENDIENTE_APROBACION';
+      return estado === 'PENDIENTE_APROBACION' || estado === 'APROBADA';
     });
     return jsonResp({ ok: true, ots: ots });
   } catch (err) {
@@ -1588,10 +1646,9 @@ function handleAprobarOT(data) {
   // fisica que recibe la OT en campo (puede ser distinta a la del registro).
   const receptorNombre     = String(data.receptor_nombre || '').trim();
   if (!folio)              return jsonResp({ ok: false, error: 'folio requerido' });
-  if (!firmaB64)           return jsonResp({ ok: false, error: 'Firma del aprobador requerida' });
-  // v2.14: la firma de recepcion del responsable es OBLIGATORIA. Aprobar y
-  // recibir son el mismo acto: ambas personas (aprobador + responsable) firman
-  // juntas en el iPad. Sin las dos firmas no se aprueba la OT.
+  // v2.34: la validacion de firmas depende del estado. PENDIENTE_APROBACION
+  // (flujo viejo) exige aprobador + receptor; APROBADA (flujo nuevo) solo
+  // exige receptor. Validamos despues de ubicar la OT y conocer el estado.
   if (!firmaRecepcionB64)  return jsonResp({ ok: false, error: 'Firma de recepcion del responsable requerida' });
   if (!receptorNombre)     return jsonResp({ ok: false, error: 'Nombre del receptor requerido' });
 
@@ -1605,27 +1662,45 @@ function handleAprobarOT(data) {
     const shOT = ss.getSheetByName(H_OT);
     const ubicado = ubicarOT(shOT, folio);
     if (!ubicado.fila) return jsonResp({ ok: false, error: 'OT no encontrada' });
-    if (ubicado.estado !== 'PENDIENTE_APROBACION') {
-      return jsonResp({ ok: false, error: 'Esta OT ya esta en estado ' + ubicado.estado });
+
+    // v2.34: enrutar segun estado.
+    const flujoLegacy = (ubicado.estado === 'PENDIENTE_APROBACION');
+    const flujoNuevo  = (ubicado.estado === 'APROBADA');
+    if (!flujoLegacy && !flujoNuevo) {
+      return jsonResp({ ok: false, error: 'Esta OT no se puede aprobar/recibir (estado ' + ubicado.estado + ')' });
+    }
+    // Flujo legacy exige firma del aprobador. El flujo nuevo NO (el creador ya firmo
+    // al crear, registrado como APROBACION del creador).
+    if (flujoLegacy && !firmaB64) {
+      return jsonResp({ ok: false, error: 'Firma del aprobador requerida' });
     }
 
-    // Guardar firma de aprobacion
-    const idFirma = guardarFirma(ss, folio, 'APROBACION', auth.usuario.nombre, firmaB64);
+    // Guardar firma de aprobacion SOLO en flujo legacy (en el nuevo ya existe del creador).
+    let idFirma = '';
+    if (flujoLegacy) {
+      idFirma = guardarFirma(ss, folio, 'APROBACION', auth.usuario.nombre, firmaB64);
+    }
 
-    // Guardar firma de recepcion (obligatoria — validada arriba).
+    // Guardar firma de recepcion (obligatoria en ambos flujos).
     // v2.17: firmante = receptor_nombre (texto libre del aprobador), NO el
     // responsable de creacion. El responsable original queda en col E intacto.
     const idFirmaRecepcion = guardarFirma(ss, folio, 'RECEPCION', receptorNombre, firmaRecepcionB64);
 
-    // Actualizar cabecera
-    shOT.getRange(ubicado.fila, 11).setValue('APROBADA');
-    shOT.getRange(ubicado.fila, 13).setValue(auth.usuario.nombre);
-    shOT.getRange(ubicado.fila, 14).setValue(new Date());
+    // v2.34: estado destino segun flujo.
+    //   Legacy: PENDIENTE_APROBACION -> APROBADA (sigue exigiendo cierre aparte).
+    //   Nuevo:  APROBADA -> EN_PROCESO (recibida en planta, lista para cierre).
+    const estadoDestino = flujoLegacy ? 'APROBADA' : 'EN_PROCESO';
+    shOT.getRange(ubicado.fila, 11).setValue(estadoDestino);
+    if (flujoLegacy) {
+      shOT.getRange(ubicado.fila, 13).setValue(auth.usuario.nombre);   // aprobado_por
+      shOT.getRange(ubicado.fila, 14).setValue(new Date());            // fecha_aprob
+    }
+    // En flujo nuevo aprobado_por + fecha_aprob ya quedaron seteados al crear.
 
-    appendLog(ss, folio, 'APROBADA', auth.usuario.nombre,
-      idFirma + ' | RECEPCION:' + idFirmaRecepcion);
+    appendLog(ss, folio, estadoDestino, auth.usuario.nombre,
+      (idFirma ? (idFirma + ' | ') : '') + 'RECEPCION:' + idFirmaRecepcion);
 
-    return jsonResp({ ok: true, folio: folio, estado: 'APROBADA',
+    return jsonResp({ ok: true, folio: folio, estado: estadoDestino,
       id_firma: idFirma, id_firma_recepcion: idFirmaRecepcion });
   } catch (err) {
     return jsonResp({ ok: false, error: err.message });
