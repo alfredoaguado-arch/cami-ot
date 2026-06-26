@@ -1,5 +1,5 @@
 // ================================================================
-// CAMI - Apps Script ORDENES DE TRABAJO v2.26
+// CAMI - Apps Script ORDENES DE TRABAJO v2.29
 // Bound al Sheet de OT (CAMI_OT_DB) - ID 12WU13Qp2DPXjaqAMuXg-yYYizuKqMU1K04v0nw0Ud7o
 //
 // REDISENIO COMPLETO vs v1.3:
@@ -48,7 +48,26 @@
 // Folder Drive Firmas:  (subcarpeta automatica dentro del folder de OT)
 // ================================================================
 
-const MODULE_VERSION = '2.26';
+const MODULE_VERSION = '2.29';
+// v2.29 (2026-06-25): Fase 0 de ruteo por mark — soporte para que cada mark
+//                     declare a qué etapas pasa, para que la sábana de
+//                     cami-procesos pinte como N/A las que no aplican y el
+//                     chip-picker de cami-ot no las muestre.
+//                     - CAT_ITEMS crece con col M (idx 12) TRAILING:
+//                       'etapas_aplica' (csv de keys ing|hab|pre|sold|prep|
+//                       acab|emb; vacío = todas).
+//                     - handleListaItemsPorProyecto devuelve el campo nuevo
+//                       en cada item (vacío para filas pre-Fase 0).
+//                     - Helper asegurarColumnaEtapasAplica() idempotente
+//                       (mismo patrón v2.20/v0.3/v0.4) — sembra header en M1.
+//                     - Salta v2.27 y v2.28 (ambos fueron releases front-only;
+//                       ping respondia 2.26 porque el backend no se tocó).
+//                     Convivencia en cami-procesos (no aquí — backend solo
+//                     entrega el dato):
+//                       set_efectivo(mark) = si EXPLICITA poblada → override total;
+//                       si vacía → default_del_tipo ∩ DEDUCIDA ∩ DEFAULT_PROYECTO.
+//                     DEDUCIDA = SE con ≤1 hijo salta {pre,sold} (lo calcula
+//                     cami-procesos cruzando CAT_COMPOSICION).
 // v2.26 (2026-06-25): endpoint NUEVO siguienteOtInterna (GET publico) — sugiere el
 //                     siguiente consecutivo de 'No. OT interna' por proyecto. SOLO
 //                     LECTURA: escanea la hoja OT, filtra col C (proyecto), parsea
@@ -261,7 +280,13 @@ function handleListaItemsPorProyecto(proyecto) {
       acabado:        String(rows[i][7] || '').trim(),                 // col 7
       es_subensamble: String(rows[i][8] || '').trim().toUpperCase(),   // col 8 'SI'/'NO'
       num_plano:      String(rows[i][10] || '').trim(),                // col 10 (string completo, puede traer varios)
-      origen:         String(rows[i][11] || '').trim()                 // col 11
+      origen:         String(rows[i][11] || '').trim(),                // col 11
+      // v2.29: csv de keys de etapa de la sábana (ing|hab|pre|sold|prep|acab|emb).
+      // Vacío = aplican todas las etapas del tipo (SE: ing,pre,sold,prep,acab,emb; MK: hab).
+      // Si poblado: override total — solo esas etapas aplican (la lógica DEDUCIDA y el
+      // DEFAULT_PROYECTO de cami-procesos se ignoran para ese mark). Mantenimiento por
+      // edición directa en el Sheet.
+      etapas_aplica:  String(rows[i][12] || '').trim()                 // col 12 (M, v2.29 trailing)
     });
   }
   return jsonResp({ ok: true, proyecto: proyecto, total: items.length, items: items });
@@ -1970,5 +1995,27 @@ function asegurarColumnaTitulo() {
     Logger.log('Columna 19 ya estaba con header correcto — no se toca');
   } else {
     Logger.log('Columna 19 ya tiene otro valor: ' + JSON.stringify(actual) + ' — NO se sobrescribe. Revisar a mano.');
+  }
+}
+
+// v2.29: helper idempotente para asegurar el header de la columna trailing
+// 'etapas_aplica' (col M = 13, idx 12) en la hoja CAT_ITEMS. Correr UNA vez
+// desde el editor tras pegar/desplegar la version 2.29. Si la celda M1 ya tiene
+// el header correcto, no toca nada. Las filas existentes (1204 en HARRISON-OWOW
+// + 20 en BASE-FRAMES-2 al momento del deploy) mantienen el campo vacío =
+// 'aplican todas las etapas del tipo'. Solo se pueblan a mano las excepciones
+// (los 12 embed plates de OWOW con 'ing,hab,sold,acab,emb' para forzar SOLD).
+function asegurarColumnaEtapasAplica() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName(H_ITEMS);
+  if (!sh) { Logger.log('Hoja CAT_ITEMS no encontrada'); return; }
+  const actual = String(sh.getRange(1, 13).getValue() || '').trim();
+  if (!actual) {
+    sh.getRange(1, 13).setValue('etapas_aplica');
+    Logger.log('Columna 13 (M) sembrada con header "etapas_aplica"');
+  } else if (actual === 'etapas_aplica') {
+    Logger.log('Columna 13 ya estaba con header correcto — no se toca');
+  } else {
+    Logger.log('Columna 13 ya tiene otro valor: ' + JSON.stringify(actual) + ' — NO se sobrescribe. Revisar a mano.');
   }
 }
