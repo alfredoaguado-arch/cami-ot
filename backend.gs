@@ -1,5 +1,5 @@
 // ================================================================
-// CAMI - Apps Script ORDENES DE TRABAJO v2.34
+// CAMI - Apps Script ORDENES DE TRABAJO v2.35
 // Bound al Sheet de OT (CAMI_OT_DB) - ID 12WU13Qp2DPXjaqAMuXg-yYYizuKqMU1K04v0nw0Ud7o
 //
 // REDISENIO COMPLETO vs v1.3:
@@ -48,7 +48,20 @@
 // Folder Drive Firmas:  (subcarpeta automatica dentro del folder de OT)
 // ================================================================
 
-const MODULE_VERSION = '2.34';
+const MODULE_VERSION = '2.35';
+// v2.35 (2026-06-26): handleRechazarOT acepta más estados (cancelar OT activa).
+//                     Antes solo se podia rechazar OT PENDIENTE_APROBACION;
+//                     ahora tambien APROBADA y EN_PROCESO. Caso uso: una OT
+//                     que se aprobo (firma supervisor al crear) pero cuyo plazo
+//                     se vencio sin que llegara a planta — se cancela con motivo
+//                     y se crea una OT nueva con fecha actualizada. Trazabilidad
+//                     completa: el log conserva la OT cancelada con su motivo,
+//                     firmante (quien la cancelo) y timestamp; la nueva OT
+//                     existe en paralelo con su propio folio + historia.
+//                     COMPLETADA no se permite cancelar (cierre es definitivo).
+//                     La sabana de cami-procesos no requiere cambios — el
+//                     hotfix de hoy ya autolimpia el state cuando una OT pasa
+//                     a RECHAZADA.
 // v2.34 (2026-06-26): Sprint 1 — desacoplar firmas de creación y recepción.
 //                     Hoy las 2 firmas (aprobador + receptor) se exigen JUNTAS
 //                     al aprobar; imposible cuando el supervisor crea la OT
@@ -1728,17 +1741,32 @@ function handleRechazarOT(data) {
     const shOT = ss.getSheetByName(H_OT);
     const ubicado = ubicarOT(shOT, folio);
     if (!ubicado.fila) return jsonResp({ ok: false, error: 'OT no encontrada' });
-    if (ubicado.estado !== 'PENDIENTE_APROBACION') {
-      return jsonResp({ ok: false, error: 'Esta OT ya esta en estado ' + ubicado.estado });
+    // v2.35: aceptar cualquier estado ACTIVO (rechazo en aprobacion o cancelacion
+    // post-aprobacion). COMPLETADA queda fuera — un cierre es definitivo.
+    const ESTADOS_CANCELABLES = {
+      'PENDIENTE_APROBACION': true, 'APROBADA': true, 'EN_PROCESO': true
+    };
+    if (!ESTADOS_CANCELABLES[ubicado.estado]) {
+      return jsonResp({ ok: false, error: 'Esta OT no se puede cancelar (estado ' + ubicado.estado + ')' });
     }
+    const eraPostAprobacion = (ubicado.estado === 'APROBADA' || ubicado.estado === 'EN_PROCESO');
 
     shOT.getRange(ubicado.fila, 11).setValue('RECHAZADA');
-    shOT.getRange(ubicado.fila, 13).setValue(auth.usuario.nombre);
-    shOT.getRange(ubicado.fila, 14).setValue(new Date());
+    // En post-aprobacion, NO pisamos aprobado_por / fecha_aprob (preservamos la
+    // historia de quien aprobo). Solo en rechazo de OT no aprobada se sobrescribe
+    // M y N con quien rechazo (comportamiento legacy).
+    if (!eraPostAprobacion) {
+      shOT.getRange(ubicado.fila, 13).setValue(auth.usuario.nombre);
+      shOT.getRange(ubicado.fila, 14).setValue(new Date());
+    }
 
-    appendLog(ss, folio, 'RECHAZADA', auth.usuario.nombre, motivo);
+    // Log con etiqueta segun el estado origen: distinguimos "rechazo" (pre-aprob)
+    // de "cancelacion" (post-aprob) para auditar.
+    const evento = eraPostAprobacion ? 'CANCELADA' : 'RECHAZADA';
+    appendLog(ss, folio, evento, auth.usuario.nombre,
+      'desde=' + ubicado.estado + ' | motivo=' + motivo);
 
-    return jsonResp({ ok: true, folio: folio, estado: 'RECHAZADA' });
+    return jsonResp({ ok: true, folio: folio, estado: 'RECHAZADA', evento: evento });
   } catch (err) {
     return jsonResp({ ok: false, error: err.message });
   } finally {
