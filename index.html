@@ -4,7 +4,12 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>CAMI — Orden de Trabajo</title>
-<!-- v2.27 (2026-06-25): "No. OT interna" sugerido. Al elegir proyecto, onProyectoChange
+<!-- v2.28 (2026-06-25): planos/cortes anexos SELECCIONABLES. La lista "PLANOS DE
+     FABRICACION DEL ITEM" cambia la palomita visual por un checkbox real por documento,
+     todos tildados por default (= comportamiento anterior). recolectar() arma
+     planos_del_lote SOLO con los tildados (set _planosDestildados), asi prepararPlanos
+     anexa solo esos. Solo PDF metadata registra los anexados (sin hoja nueva). Front-only.
+     v2.27 (2026-06-25): "No. OT interna" sugerido. Al elegir proyecto, onProyectoChange
      precarga #ot-interna con el siguiente consecutivo del proyecto (endpoint
      siguienteOtInterna, backend v2.26), editable; si el endpoint falla el campo queda
      como esta (degradacion suave).
@@ -638,6 +643,9 @@ let _itemsActuales = [];    // lote de items seleccionados (multi-pick)
 let _busquedaActual = '';   // string actual del filtro de items
 let _planosCache = [];      // todos los planos del proyecto actual
 let _planosDelLote = [];    // F3: union dedup de planos que cubren al menos un mark del lote
+// v2.28: codigos de documentos DESTILDADOS (no se anexan). Default vacio = todos tildados.
+// Persiste entre re-render por cambio de marks; se limpia al cambiar de proyecto.
+let _planosDestildados = new Set();
 let _qtyTotalPorMark = {};  // F4: mark canonical -> qty total derivada de COMPOSICION
 let _hijosPorSE = {};       // F5: label de SE -> [{componente_id, qty, label_componente, desc_componente}, ...]
 let _composicionPromise = null;   // F4: promise de la carga de composicion del proyecto actual
@@ -890,6 +898,7 @@ function onProyectoChange() {
   // Resetear planos
   _planosCache = [];
   _planosDelLote = [];
+  _planosDestildados.clear();   // v2.28: nuevo proyecto, todos los documentos vuelven a tildados
   actualizarPlanosDelLote();
   // F4: resetear composicion del proyecto anterior
   _qtyTotalPorMark = {};
@@ -994,6 +1003,15 @@ function actualizarPlanosDelLote() {
   renderizarPlanosLote();
 }
 
+// v2.28: marca/desmarca un documento (plano o corte) para anexarlo al PDF. Solo muta
+// el set _planosDestildados; no re-renderiza (el checkbox ya refleja su estado).
+function togglePlanoAnexo(el) {
+  const cod = el.getAttribute('data-cod');
+  if (!cod) return;
+  if (el.checked) _planosDestildados.delete(cod);
+  else            _planosDestildados.add(cod);
+}
+
 function renderizarPlanosLote() {
   const cont = document.getElementById('planos-item-content');
   if (!_itemsActuales.length) {
@@ -1021,7 +1039,10 @@ function renderizarPlanosLote() {
       ? '<span style="display:inline-block;background:#E8F0F8;color:#2A5A8C;font-weight:700;font-size:10px;letter-spacing:.04em;padding:2px 7px;border-radius:4px">CORTE</span>'
       : ('Plano ' + escapeHtml(p.numero_plano || '') + (p.revision ? ' Rev ' + escapeHtml(p.revision) : ''));
     return '<div style="display:flex;gap:12px;align-items:center;padding:8px 0;border-bottom:1px solid #f0eee8;font-size:12px">' +
-           '<span style="color:#3B6D11;font-size:14px;width:16px;flex-shrink:0">&#10003;</span>' +
+           '<input type="checkbox" ' + (_planosDestildados.has(p.codigo) ? '' : 'checked') +
+             ' data-cod="' + escapeAttr(p.codigo) + '" onchange="togglePlanoAnexo(this)"' +
+             ' title="Anexar este documento al PDF de la OT"' +
+             ' style="width:16px;height:16px;flex-shrink:0;cursor:pointer;accent-color:#3B6D11">' +
            '<span style="min-width:140px;flex-shrink:0">' + codigoCell + '</span>' +
            '<span style="color:#4A4A48;min-width:130px;flex-shrink:0">' + num + '</span>' +
            '<span style="color:#888780">' + escapeHtml(p.title || '') + '</span>' +
@@ -1445,7 +1466,8 @@ function recolectar() {
     direccion:    document.getElementById('direccion').value.trim(),
     modo:         _proyectoActual ? _proyectoActual.modo : '',
     items:        _itemsActuales,
-    planos_del_lote: _planosDelLote.map(p => ({
+    // v2.28: solo los documentos TILDADOS se anexan (excluye los destildados).
+    planos_del_lote: _planosDelLote.filter(p => !_planosDestildados.has(p.codigo)).map(p => ({
       codigo: p.codigo,
       numero_plano: p.numero_plano,
       title: p.title,
