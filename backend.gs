@@ -1,5 +1,5 @@
 // ================================================================
-// CAMI - Apps Script ORDENES DE TRABAJO v2.36
+// CAMI - Apps Script ORDENES DE TRABAJO v2.37
 // Bound al Sheet de OT (CAMI_OT_DB) - ID 12WU13Qp2DPXjaqAMuXg-yYYizuKqMU1K04v0nw0Ud7o
 //
 // REDISENIO COMPLETO vs v1.3:
@@ -48,7 +48,52 @@
 // Folder Drive Firmas:  (subcarpeta automatica dentro del folder de OT)
 // ================================================================
 
-const MODULE_VERSION = '2.36';
+const MODULE_VERSION = '2.37';
+// v2.37 (2026-06-27): Sprint 3 — OT por etapa SE + PDF lockeado pre-recepcion.
+//
+//   PARTE A — OT por etapa SE (lunes ensambles OWOW + BF2):
+//   - handlePrechequeoMarks ahora reconoce SEs como "marks con volumen". Hoy
+//     el handler solo leia CAT_COMPOSICION (componentes MK del proyecto), y
+//     un SE pasaba como 'sin_volumen' (informativo). v2.37 agrega un segundo
+//     pase sobre CAT_ITEMS: para cada SE del proyecto, su total efectivo es
+//     CAT_ITEMS.qty_total (col P sembrada por Sprint 1). Vacio = 1 (default
+//     OWOW). BF2 SE-BFG=24 + SE-BFC poblado. SEs que ya esten en COMPOSICION
+//     (caso raro: SE como componente de otro SE) NO se pisan — la suma de
+//     COMPOSICION sigue dominando para esos.
+//   - Sin cambios en handleCrearOT / OT_LOTE_MARKS / handleListaLoteMarks:
+//     ya escriben (mark, qty) sin distinguir tipo. La sabana de cami-procesos
+//     (Sprint 2) ya consume (mark, etapa) y muestra 'X/24' al cerrar la OT.
+//
+//   PARTE B — PDF lockeado hasta firma de recepcion (cerrar atajo):
+//   - Problema: en el flujo nuevo (v2.34, firma supervisor al crear -> APROBADA
+//     directo), el supervisor podia descargar/compartir el PDF y mandarlo a
+//     planta sin que el receptor firmara la recepcion digital. La OT quedaba
+//     APROBADA forever y se cerraba sin pasar por EN_PROCESO.
+//   - Fix: cuando handleCrearOT recibe firma_supervisor (flag interno
+//     bloquearPDFHastaRecepcion), el PDF QUEDA PRIVADO en Drive (no
+//     setSharing) y col Q (pdf_url) queda VACIA. El metadata y description
+//     del PDF si se persisten — el dato vive en la cabecera.
+//   - handleAprobarOT (flujo nuevo: APROBADA -> EN_PROCESO al firmar recepcion):
+//     localiza el PDF en Drive via _resolverPDFFileIdDeOT (busca por nombre
+//     '{folio}.pdf' o '{primer_mark}_{folio}.pdf' bajo FOLDER_ID/proyecto/etapa/),
+//     aplica ANYONE_WITH_LINK, escribe col Q. Idempotente: si la URL ya estaba
+//     (legacy o re-aprobacion), no se sobrescribe. Si la liberacion falla
+//     (Drive caido, archivo movido), la recepcion AVANZA igual al estado
+//     EN_PROCESO — la disciplina importa mas que el sharing.
+//   - handleAbrirPDF (destino del QR): si estado=APROBADA y col Q vacia,
+//     pagina "OT pendiente de recepcion" explicando que el receptor debe
+//     abrir la app y firmar. EN_PROCESO/COMPLETADA -> abre PDF normal.
+//   - El flujo legacy (PENDIENTE_APROBACION sin firma supervisor) NO se
+//     toca: en ese flujo la OT no puede cerrarse hasta firmar aprobacion+
+//     recepcion en el modal, asi que el atajo no existe.
+//   - Response de handleCrearOT incluye pdf_locked:bool para que el frontend
+//     decida si mostrar botones de descarga/compartir o solo vista previa.
+//
+//   COMPAT TOTAL: OTs viejas (con pdf_url ya pobladas) siguen abriendo. OTs
+//   nuevas en flujo legacy siguen sin lock. OTs nuevas en flujo nuevo siguen
+//   el rail estricto APROBADA(lock) -> EN_PROCESO(unlock) -> COMPLETADA.
+//   Cualquier caso especial: el dueño abre el PDF directamente en Drive
+//   con su cuenta y libera sharing a mano (escape hatch fuera del sistema).
 // v2.36 (2026-06-26): Fase 3 — qty_total para SE en CAT_ITEMS. Caso uso BF2:
 //                     SE-BFG representa 24 instancias del mismo marco. Hoy
 //                     CAT_COMPOSICION expresa qty TOTAL en el proyecto a nivel
@@ -947,6 +992,9 @@ function handleVerificar(folio) {
 
 // ── ENDPOINT GET PUBLICO: ABRIR PDF (destino del QR de verificacion) ──
 // Busca el folio, y si tiene PDF redirige al visor de Drive. Publico (sin token).
+// v2.37: si el estado es APROBADA y col Q viene vacia (flujo nuevo: firma supervisor
+// al crear, PDF privado), responde una pagina "pendiente de recepcion" en vez de
+// linkear. Si pasa a EN_PROCESO (recepcion firmada), col Q se llena y abre normal.
 function handleAbrirPDF(folio) {
   folio = String(folio || '').trim();
   if (!folio) return htmlResp(paginaMensajeOT('Folio invalido', 'No se especifico un folio.'));
@@ -954,17 +1002,27 @@ function handleAbrirPDF(folio) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const shOT = ss.getSheetByName(H_OT);
   const rows = shOT.getDataRange().getValues();
-  let encontrado = false, url = '';
+  let encontrado = false, url = '', estado = '';
   for (let i = 1; i < rows.length; i++) {
     if (String(rows[i][0]) === folio) {
       encontrado = true;
-      url = String(rows[i][16] || '').trim();  // Q pdf_url
+      estado = String(rows[i][10] || '').trim();   // K estado
+      url    = String(rows[i][16] || '').trim();   // Q pdf_url
       break;
     }
   }
   if (!encontrado) {
     return htmlResp(paginaMensajeOT('OT no encontrada',
       'El folio ' + escapeHtml(folio) + ' no existe en el sistema.'));
+  }
+  // v2.37: bloqueo cuando la OT esta APROBADA sin recepcion firmada todavia.
+  // No revelamos URL del PDF; el receptor debe entrar a la app y firmar.
+  if (estado === 'APROBADA' && !url) {
+    return htmlResp(paginaMensajeOT('OT pendiente de recepcion',
+      'El folio ' + escapeHtml(folio) + ' aun no se recibio en planta.<br><br>' +
+      'El receptor debe abrir la app de cami-ot, ir a "Aprobar / recibir OT", ' +
+      'firmar la recepcion, y desde ahi descargar el PDF firmado.<br><br>' +
+      '<small style="opacity:.7">No se puede abrir esta OT hasta que el receptor firme la recepcion digital.</small>'));
   }
   if (!url) {
     return htmlResp(paginaMensajeOT('OT pendiente',
@@ -1049,7 +1107,10 @@ function handlePrechequeoMarks(data) {
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
 
-  // 1) VOLUMEN TOTAL por mark desde CAT_COMPOSICION (Σ qty col 3 por componente col 2, del proyecto).
+  // 1) VOLUMEN TOTAL por mark.
+  //    MK -> Σ CAT_COMPOSICION.qty (col 3) por componente (col 2), del proyecto.
+  //    SE -> CAT_ITEMS.qty_total (col P idx 15, Sprint 1 Fase 3). Vacio = 1.
+  //    Cubre BF2 (SE-BFG.qty_total=24, SE-BFC poblado) y OWOW (491 SE default 1).
   const totalPorMark = {};
   const shComp = ss.getSheetByName(H_COMPOSICION);
   if (shComp) {
@@ -1059,6 +1120,24 @@ function handlePrechequeoMarks(data) {
       const comp = String(rc[i][2] || '').trim();                               // col 2 componente
       if (!comp) continue;
       totalPorMark[comp] = (totalPorMark[comp] || 0) + (parseFloat(rc[i][3]) || 0);  // col 3 qty
+    }
+  }
+  // Sprint 3a: agregar SEs del proyecto desde CAT_ITEMS.qty_total. SE en
+  // COMPOSICION (caso raro: SE como componente de otro SE) ya quedo en
+  // totalPorMark — NO se pisa (la suma de COMPOSICION domina sobre qty_total).
+  const shItems = ss.getSheetByName(H_ITEMS);
+  if (shItems) {
+    const ri = shItems.getDataRange().getValues();
+    for (let i = 1; i < ri.length; i++) {
+      if (String(ri[i][0] || '').trim() !== proyecto) continue;                 // col 0 proyecto
+      const esSE = String(ri[i][8] || '').trim().toUpperCase() === 'SI';        // col 8 es_subensamble
+      if (!esSE) continue;
+      const mk = String(ri[i][1] || '').trim();                                 // col 1 mark canonico
+      if (!mk) continue;
+      if (Object.prototype.hasOwnProperty.call(totalPorMark, mk)) continue;     // no pisa COMPOSICION
+      const qtRaw = ri[i][15];                                                   // col 15 (P) qty_total
+      const qt = Number(qtRaw);
+      totalPorMark[mk] = (isFinite(qt) && qt > 0) ? qt : 1;
     }
   }
 
@@ -1521,6 +1600,19 @@ function handleCrearOT(data) {
     //       resumable (camino rapido, evita el cuello de ~82s del base64).
     //   (b) pdf:     base64 que se decodea y crea aqui (camino legacy,
     //       preservado por compatibilidad si el cliente aun no se actualizo).
+    //
+    // v2.37: si la OT nacio APROBADA (firma supervisor al crear, flujo nuevo
+    // v2.34), el PDF queda PRIVADO hasta que el receptor firme recepcion en
+    // planta — el supervisor no puede descargarlo, ni el QR de un PDF impreso
+    // a destiempo abre el Drive. El sharing y la col Q (pdf_url) se llenan en
+    // handleAprobarOT cuando APROBADA -> EN_PROCESO. Esto cierra el atajo de
+    // imprimir y olvidarse de la recepcion digital. El metadata si se
+    // persiste — el dato vive en la cabecera por cualquier auditoria.
+    //
+    // Flujo legacy (PENDIENTE_APROBACION sin firma supervisor) NO se bloquea:
+    // la OT no puede cerrarse hasta firmar aprobacion+recepcion en el modal,
+    // entonces la fuga del atajo no existe ahi.
+    const bloquearPDFHastaRecepcion = hayFirmaSupervisor;
     let pdfUrl = '';
     const fileIdSubido = String(data.file_id || '').trim();
     if (fileIdSubido) {
@@ -1529,7 +1621,9 @@ function handleCrearOT(data) {
       if (!_esDescendienteDeOT(file)) {
         return jsonResp({ ok: false, error: 'file_id no esta en el arbol de OTs' });
       }
-      file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+      if (!bloquearPDFHastaRecepcion) {
+        file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+      }
       const meta = {
         folio: folio, fecha: fecha, proyecto: proyecto, etapa: etapa,
         responsable: responsable, ot_interna: otInterna, entrega: entrega,
@@ -1538,8 +1632,10 @@ function handleCrearOT(data) {
         timestamp: new Date().toISOString()
       };
       file.setDescription(META_PREFIX + JSON.stringify(meta));
-      pdfUrl = 'https://drive.google.com/file/d/' + fileIdSubido + '/view';
-      shOT.getRange(filaOT, 17).setValue(pdfUrl);
+      if (!bloquearPDFHastaRecepcion) {
+        pdfUrl = 'https://drive.google.com/file/d/' + fileIdSubido + '/view';
+        shOT.getRange(filaOT, 17).setValue(pdfUrl);
+      }
     } else if (pdfB64) {
       // Legacy path: base64 viaja por doPost (lento). Mantenido por compat.
       const blob = Utilities.newBlob(
@@ -1550,7 +1646,9 @@ function handleCrearOT(data) {
       // v2.12: el PDF se crea en FOLDER_ID/<proyecto>/<etapa>/ (arbol por proyecto+etapa).
       const file = obtenerCarpetaProyectoEtapa(proyecto, etapa).createFile(blob);
       // v2.10: defense-in-depth. No depender de la herencia de sharing de la carpeta.
-      file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+      if (!bloquearPDFHastaRecepcion) {
+        file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+      }
       const meta = {
         folio: folio, fecha: fecha, proyecto: proyecto, etapa: etapa,
         responsable: responsable, ot_interna: otInterna, entrega: entrega,
@@ -1561,8 +1659,10 @@ function handleCrearOT(data) {
       file.setDescription(META_PREFIX + JSON.stringify(meta));
       // v2.10.2: URL bare /view (sin ?usp=) es la unica forma confirmada que Drive abre
       // para visitantes sin login.
-      pdfUrl = 'https://drive.google.com/file/d/' + file.getId() + '/view';
-      shOT.getRange(filaOT, 17).setValue(pdfUrl);
+      if (!bloquearPDFHastaRecepcion) {
+        pdfUrl = 'https://drive.google.com/file/d/' + file.getId() + '/view';
+        shOT.getRange(filaOT, 17).setValue(pdfUrl);
+      }
     }
 
     return jsonResp({
@@ -1571,6 +1671,7 @@ function handleCrearOT(data) {
       url: pdfUrl,
       usuario: usuario.nombre,
       estado: estadoInicial,                        // v2.34: el front lo necesita para enrutar UI
+      pdf_locked: !!bloquearPDFHastaRecepcion,      // v2.37: front oculta descarga/compartir
       id_firma_supervisor: idFirmaSupervisor || ''  // v2.34: para que el front pueda inyectar al PDF si elige
     });
 
@@ -1740,11 +1841,43 @@ function handleAprobarOT(data) {
     }
     // En flujo nuevo aprobado_por + fecha_aprob ya quedaron seteados al crear.
 
+    // v2.37: liberar el PDF en el flujo nuevo. handleCrearOT (con firma supervisor)
+    // dejo el PDF privado en Drive y col Q vacia para forzar la recepcion digital.
+    // Aqui, una vez firmada la recepcion, aplicamos sharing publico y escribimos
+    // pdf_url para que el QR del PDF impreso abra, la lista 'por cerrar' linkee al
+    // PDF, y la sabana de cami-procesos vea el badge OT clickeable. Idempotente:
+    // si col Q ya tenia url (ej. flujo legacy o re-aprobacion), se respeta lo que
+    // ya este (no rompe ningun caso historico).
+    let pdfUrlLiberado = '';
+    if (!flujoLegacy) {
+      const pdfUrlActual = String(shOT.getRange(ubicado.fila, 17).getValue() || '').trim();
+      if (!pdfUrlActual) {
+        try {
+          const pdfFileId = _resolverPDFFileIdDeOT(folio, ubicado.fila, shOT);
+          if (pdfFileId) {
+            const file = DriveApp.getFileById(pdfFileId);
+            file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+            pdfUrlLiberado = 'https://drive.google.com/file/d/' + pdfFileId + '/view';
+            shOT.getRange(ubicado.fila, 17).setValue(pdfUrlLiberado);
+          }
+        } catch (e) {
+          // No bloqueamos la recepcion si la liberacion falla (la OT igual avanza
+          // al estado EN_PROCESO). El supervisor puede liberar a mano desde Drive
+          // si el caso lo requiere; el flujo digital sigue funcionando.
+          Logger.log('No se pudo liberar PDF de ' + folio + ': ' + e.message);
+        }
+      } else {
+        pdfUrlLiberado = pdfUrlActual;
+      }
+    }
+
     appendLog(ss, folio, estadoDestino, auth.usuario.nombre,
-      (idFirma ? (idFirma + ' | ') : '') + 'RECEPCION:' + idFirmaRecepcion);
+      (idFirma ? (idFirma + ' | ') : '') + 'RECEPCION:' + idFirmaRecepcion +
+      (pdfUrlLiberado ? ' | pdf_liberado' : ''));
 
     return jsonResp({ ok: true, folio: folio, estado: estadoDestino,
-      id_firma: idFirma, id_firma_recepcion: idFirmaRecepcion });
+      id_firma: idFirma, id_firma_recepcion: idFirmaRecepcion,
+      pdf_url: pdfUrlLiberado });
   } catch (err) {
     return jsonResp({ ok: false, error: err.message });
   } finally {
@@ -2036,6 +2169,27 @@ function obtenerFolderFirmas() {
   const subs = padre.getFoldersByName(FIRMAS_SUBFOLDER);
   if (subs.hasNext()) return subs.next();
   return padre.createFolder(FIRMAS_SUBFOLDER);
+}
+
+// v2.37: localiza el fileId del PDF de una OT cuando col Q (pdf_url) viene vacia.
+// Caso uso: flujo nuevo (firma supervisor al crear) deja el PDF privado sin URL en
+// la cabecera. Al recibir en planta queremos liberarlo, pero handleAprobarOT no
+// recibe file_id; lo buscamos en Drive bajo FOLDER_ID/<proyecto>/<etapa>/ por
+// patron de nombre '...{folio}.pdf'. Tolera el prefijo del primer_mark del lote
+// (v2.18) y archivos sueltos con nombre exacto '{folio}.pdf'.
+function _resolverPDFFileIdDeOT(folio, fila, shOT) {
+  const proyecto = String(shOT.getRange(fila, 3).getValue() || '').trim();   // col C
+  const etapa    = String(shOT.getRange(fila, 4).getValue() || '').trim();   // col D
+  if (!proyecto || !etapa) return '';
+  const folder = obtenerCarpetaProyectoEtapa(proyecto, etapa);
+  const sufijo = folio + '.pdf';
+  const it = folder.getFilesByType(MimeType.PDF);
+  while (it.hasNext()) {
+    const f = it.next();
+    const nm = f.getName();
+    if (nm === sufijo || nm.endsWith('_' + sufijo)) return f.getId();
+  }
+  return '';
 }
 
 // v2.12: busca o crea una subcarpeta con `nombre` dentro de `padre`. Si existe
