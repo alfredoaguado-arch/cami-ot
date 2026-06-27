@@ -4,7 +4,13 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>CAMI — Orden de Trabajo</title>
-<!-- v2.37 (2026-06-27): Sprint 3 — OT por etapa SE + PDF lockeado pre-recepcion.
+<!-- v2.37.1 (2026-06-27): fix critico — el payload de crearOT NO incluia
+     firma_supervisor (bug de v2.34). La firma se capturaba en _firmaRecepcion
+     y se inyectaba visualmente al PDF, pero el backend NUNCA la recibia, asi
+     que todas las OTs caian en PENDIENTE_APROBACION pese a tener firma visible.
+     Con esto activo, el flujo nuevo APROBADA -> EN_PROCESO y el PDF lockeado
+     de Sprint 3b finalmente operan en prod.
+     v2.37 (2026-06-27): Sprint 3 — OT por etapa SE + PDF lockeado pre-recepcion.
      A) chip-picker en etapa SE: al agregar un SE al lote, bomAgregarFilaParaSE mete
         UNA fila al BOM con qty = item.qty_total (vacio=1, BF2 SE-BFG=24, editable).
         En HABILITADO la expansion en MK hijos se mantiene (Fase 1 legacy).
@@ -2171,6 +2177,11 @@ async function generarOT() {
 
     // 6. Llamar a crearOT con file_id (NO con pdf base64). Backend aplica sharing,
     // setDescription con metadata, y escribe la fila del Sheet.
+    // v2.37 fix: incluir firma_supervisor en el payload. Antes solo viajaba en
+    // recolectar() y en el PDF inyectado visualmente, pero el backend nunca la
+    // recibia — todas las OTs caian en PENDIENTE_APROBACION pese a tener firma
+    // del supervisor en el PDF. Sin esto, Sprint 3b (PDF lockeado pre-recepcion)
+    // tampoco se activa porque el backend nunca ve la firma.
     const _tCrearOT0 = performance.now();
     const resp = await fetch(SCRIPT_URL, {
       method: 'POST', headers: { 'Content-Type': 'text/plain' },
@@ -2181,7 +2192,8 @@ async function generarOT() {
         inspeccion: d.inspeccion, observaciones: d.observaciones,
         materiales: d.materiales, file_id: fileId,
         lote_marks: d.lote_marks || [],
-        titulo_actividad: d.titulo_actividad || ''   // v2.20: persiste en col 19 de la hoja OT
+        titulo_actividad: d.titulo_actividad || '',  // v2.20: persiste en col 19 de la hoja OT
+        firma_supervisor: d.firma_supervisor || ''   // v2.37 fix: bug de v2.34
       })
     });
     const result = await resp.json();
