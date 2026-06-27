@@ -4,7 +4,20 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>CAMI — Orden de Trabajo</title>
-<!-- v2.28 (2026-06-25): planos/cortes anexos SELECCIONABLES. La lista "PLANOS DE
+<!-- v2.37 (2026-06-27): Sprint 3 — OT por etapa SE + PDF lockeado pre-recepcion.
+     A) chip-picker en etapa SE: al agregar un SE al lote, bomAgregarFilaParaSE mete
+        UNA fila al BOM con qty = item.qty_total (vacio=1, BF2 SE-BFG=24, editable).
+        En HABILITADO la expansion en MK hijos se mantiene (Fase 1 legacy).
+     B) modal post-creacion ramificado por pdf_locked (devuelto por handleCrearOT):
+        OT con firma supervisor -> APROBADA -> PDF privado en Drive, col Q vacia,
+        modal oculta botones de descarga/compartir/Drive y muestra info-block
+        explicando que el receptor en planta debe firmar la recepcion digital
+        para liberar el PDF. Cero escape hatches en la app (Alfredo maneja casos
+        especiales abriendo el archivo directo en Drive con su cuenta).
+        El listado "Aprobar / recibir" usa resApr.pdf_url devuelto por handleAprobarOT
+        (URL liberada en el momento) en vez de la cacheada (que era vacia para OTs
+        lockeadas).
+     v2.28 (2026-06-25): planos/cortes anexos SELECCIONABLES. La lista "PLANOS DE
      FABRICACION DEL ITEM" cambia la palomita visual por un checkbox real por documento,
      todos tildados por default (= comportamiento anterior). recolectar() arma
      planos_del_lote SOLO con los tildados (set _planosDestildados), asi prepararPlanos
@@ -530,13 +543,32 @@ textarea{resize:vertical;min-height:60px}
       <div style="text-align:center;margin-bottom:14px">
         <div style="font-size:36px;color:#3B6D11">✓</div>
         <div style="font-size:14px;font-weight:700;color:#1a1a18;margin-top:6px" id="exito-folio">FOLIO</div>
-        <div style="font-size:11px;color:#4A4A48;margin-top:4px">Estado: Aprobada — lista para taller</div>
+        <div style="font-size:11px;color:#4A4A48;margin-top:4px" id="exito-estado-msg">Estado: Aprobada — lista para taller</div>
       </div>
-      <p style="font-size:12px;color:#4A4A48;text-align:center">El PDF se guardo en Drive. ¿Que quieres hacer con tu copia local?</p>
-      <div class="modal-actions" style="flex-direction:column;gap:8px">
-        <button class="btn-success" id="btn-compartir-pdf" onclick="compartirPDF()">📲 Compartir / Enviar por WhatsApp</button>
-        <button class="btn-primary" onclick="descargarPDF()">⬇ Descargar al dispositivo</button>
-        <button class="btn-secondary" onclick="cerrarExitoModal()">Cerrar</button>
+      <!-- v2.37: si pdf_locked, ocultamos copy + botones de descarga y mostramos info-block. -->
+      <div id="exito-bloque-libre">
+        <p style="font-size:12px;color:#4A4A48;text-align:center">El PDF se guardo en Drive. ¿Que quieres hacer con tu copia local?</p>
+        <div class="modal-actions" style="flex-direction:column;gap:8px">
+          <button class="btn-success" id="btn-compartir-pdf" onclick="compartirPDF()">📲 Compartir / Enviar por WhatsApp</button>
+          <button class="btn-primary" onclick="descargarPDF()">⬇ Descargar al dispositivo</button>
+        </div>
+      </div>
+      <div id="exito-bloque-bloqueado" style="display:none">
+        <div style="background:#FFF4D6;border:1px solid #E0C56E;border-radius:8px;padding:14px;margin-bottom:12px">
+          <div style="font-size:13px;font-weight:700;color:#8B6914;margin-bottom:6px">PDF disponible tras la firma de recepcion</div>
+          <p style="font-size:12px;color:#4A4A48;line-height:1.45;margin:0">
+            La OT queda firmada por ti y registrada como APROBADA. El receptor en planta
+            debe abrir la app de cami-ot, ir a <b>Aprobar / recibir OT</b>, ubicar este folio
+            y firmar la recepcion. En ese momento se libera el PDF para imprimir o compartir.
+          </p>
+        </div>
+        <p style="font-size:11px;color:#888780;text-align:center;margin:0 0 8px">
+          Para casos especiales (cliente que necesita el PDF antes), el dueño puede abrir el archivo
+          directo en Drive con su cuenta.
+        </p>
+      </div>
+      <div class="modal-actions" style="flex-direction:column;gap:8px;margin-top:8px">
+        <button class="btn-secondary" onclick="cerrarExitoModal()">Entendido</button>
       </div>
       <div id="exito-drive-link" style="text-align:center;margin-top:10px;font-size:11px"></div>
     </div>
@@ -1215,8 +1247,19 @@ async function agregarItem(idx) {
   document.getElementById('item-busqueda').value = '';
   _busquedaActual = '';
   renderizarChips();
+  // Sprint 3a: el ruteo del BOM depende del tipo del item Y de la etapa actual.
+  //   SE + HABILITADO -> expandir en MK hijos (Fase 1, comportamiento legacy).
+  //   SE + etapa SE   -> 1 fila para el SE con qty=qty_total (BF2: 24 editable).
+  //   MK + HABILITADO -> 1 fila para el MK (legacy).
+  // _itemAplicaEnEtapa ya filtra el chip-picker para que solo aparezcan items
+  // validos para la etapa; aqui solo decidimos como se traduce al BOM.
   if (String(item.es_subensamble || '').toUpperCase() === 'SI') {
-    bomAgregarFilasParaSubensamble(item);
+    const etapaKey = _etapaKeyDe((document.getElementById('etapa').value || '').toUpperCase());
+    if (etapaKey === 'hab') {
+      bomAgregarFilasParaSubensamble(item);
+    } else {
+      bomAgregarFilaParaSE(item);
+    }
   } else {
     bomAgregarFilaParaMark(item);
   }
@@ -1286,6 +1329,8 @@ function bomAgregarFilaParaMark(item) {
 
 // F5: expande un sub-ensamble en sus piezas y agrega 1 fila por componente del BOM.
 // Todas las filas se marcan con data-mark=SE.mark para que quitar el chip elimine el bloque entero.
+// Solo aplica en HABILITADO: ahi la OT cubre la fabricacion de las hojas, asi que
+// agregar un SE = agregar todos sus MK hijos.
 // Fallback: si la composicion del proyecto no conoce el SE (proyecto sin CAT_COMPOSICION o SE huerfano),
 //           se cae al comportamiento de hoja para no romper el flujo.
 function bomAgregarFilasParaSubensamble(seItem) {
@@ -1304,6 +1349,18 @@ function bomAgregarFilasParaSubensamble(seItem) {
     const partes = [label, desc, mat].map(p => String(p || '').trim()).filter(p => p);
     bomAnexarFila(partes.join(' · '), h.qty, seItem.mark);
   });
+}
+
+// Sprint 3a: OT por etapa SE (PRE/SOLD/PREP/ACAB/EMB). El SE NO se expande en
+// componentes — entra al BOM como UNA fila con qty default = qty_total del SE.
+// Caso OWOW: qty_total vacio o 1 -> 1 (cada SE es unico). Caso BF2: SE-BFG=24
+// (editable a parcial, ej. 8 de 24 para una OT de soldadura del primer lote).
+// Descripcion espejo de bomAgregarFilaParaMark: label · descripcion · material.
+function bomAgregarFilaParaSE(seItem) {
+  const partes = [seItem.label || seItem.mark, seItem.descripcion, seItem.material]
+    .map(p => String(p || '').trim()).filter(p => p);
+  const qty = Number(seItem.qty_total) > 0 ? Number(seItem.qty_total) : 1;
+  bomAnexarFila(partes.join(' · '), qty, seItem.mark);
 }
 
 // F4: quita la fila del BOM cuyo data-mark === mark dado.
@@ -2136,7 +2193,10 @@ async function generarOT() {
     if (result.ok) {
       _ultimoPDF = { folio: result.folio, blob: blobLocal, url: result.url };
       _firmaRecepcion = null;  // limpiar para no arrastrarla a la siguiente OT
-      mostrarExitoModal(result.folio, result.url);
+      // v2.37: el backend marca pdf_locked=true cuando el PDF queda privado
+      // hasta la firma de recepcion en planta (flujo nuevo APROBADA directo).
+      // El modal post-creacion enruta segun ese flag.
+      mostrarExitoModal(result.folio, result.url, !!result.pdf_locked);
     } else if (/sesion/i.test(result.error || '')) {
       abrirReloginModal();
     } else {
@@ -2150,11 +2210,27 @@ async function generarOT() {
   }
 }
 
-function mostrarExitoModal(folio, driveUrl) {
+function mostrarExitoModal(folio, driveUrl, pdfLocked) {
   document.getElementById('exito-folio').textContent = folio;
   const linkDiv = document.getElementById('exito-drive-link');
-  linkDiv.innerHTML = driveUrl ? '<a href="' + driveUrl + '" target="_blank" style="color:#2A5A8C">Ver tambien en Drive →</a>' : '';
-  document.getElementById('btn-compartir-pdf').style.display = puedeCompartirArchivo() ? '' : 'none';
+  const bloqueLibre  = document.getElementById('exito-bloque-libre');
+  const bloqueLock   = document.getElementById('exito-bloque-bloqueado');
+  const estadoMsg    = document.getElementById('exito-estado-msg');
+  if (pdfLocked) {
+    // v2.37: la OT esta APROBADA pero el PDF queda privado hasta firma de recepcion.
+    // Sin botones de descarga/compartir/Drive — el atajo de saltarse la recepcion
+    // digital se cierra aqui.
+    bloqueLibre.style.display = 'none';
+    bloqueLock.style.display  = '';
+    linkDiv.innerHTML = '';
+    estadoMsg.textContent = 'Estado: Aprobada — pendiente de recepcion en planta';
+  } else {
+    bloqueLibre.style.display = '';
+    bloqueLock.style.display  = 'none';
+    linkDiv.innerHTML = driveUrl ? '<a href="' + driveUrl + '" target="_blank" style="color:#2A5A8C">Ver tambien en Drive →</a>' : '';
+    document.getElementById('btn-compartir-pdf').style.display = puedeCompartirArchivo() ? '' : 'none';
+    estadoMsg.textContent = 'Estado: Aprobada — lista para taller';
+  }
   document.getElementById('exito-modal').classList.add('show');
 }
 function cerrarExitoModal() { document.getElementById('exito-modal').classList.remove('show'); }
@@ -2570,8 +2646,11 @@ async function confirmarAprobacion() {
     // v2.34: tras procesar, ofrecer descarga del PDF firmado en una pestana
     // nueva. El PDF ya esta publico (ANYONE_WITH_LINK) y _otEnAprobacion.pdf_url
     // apunta al visor de Drive — Hugo lo guarda en el iPad con el menu del visor.
+    // v2.37: en flujo nuevo el PDF nacio lockeado (col Q vacia). handleAprobarOT
+    // lo libera al firmar recepcion y devuelve la URL liberada en resApr.pdf_url.
+    // Preferimos esa sobre la cacheada del listado, que podria estar vacia.
     const folioOk = _otEnAprobacion.folio;
-    const urlOk   = _otEnAprobacion.pdf_url || '';
+    const urlOk   = resApr.pdf_url || _otEnAprobacion.pdf_url || '';
     cerrarAprobarModal();
     mostrarDialogoOTRecibida(folioOk, urlOk, flujoNuevo);
     cargarPorAprobar();
