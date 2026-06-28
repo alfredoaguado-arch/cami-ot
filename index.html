@@ -4,7 +4,17 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>CAMI — Orden de Trabajo</title>
-<!-- v2.37.2 (2026-06-27): refactor OT por etapa SE — chip-qty inline + BOM
+<!-- v2.37.3 (2026-06-27): hotfix deadlock — el modal de aprobacion fallaba con
+     "No se pudo extraer fileId del pdf_url" en OTs nuevas (lockeadas). Causa:
+     el front necesita el fileId ANTES de aprobarOT porque inyecta la firma con
+     pdf-lib sobre el PDF descargado. Lo extraia de pdf_url, pero el flujo
+     lockeado deja pdf_url vacio hasta DESPUES de aprobarOT — deadlock.
+     Backend v2.37.3 ahora devuelve pdf_file_id por OT (cachea por proyecto+etapa
+     para no escanear Drive multiples veces). Frontend usa pdf_file_id como
+     fallback cuando pdf_url no tiene fileId. Mismo fallback en confirmarCierre
+     por consistencia (caso raro pero posible si una OT APROBADA llega a cierre
+     sin pasar por recepcion).
+     v2.37.2 (2026-06-27): refactor OT por etapa SE — chip-qty inline + BOM
      expandido a COMPONENTES. Hoy el chip de un SE en etapa SE entra al BOM
      como UNA fila con qty=qty_total. Producion se queja porque eso no le
      dice que material sacar del almacen. Cambio:
@@ -2727,11 +2737,14 @@ async function confirmarAprobacion() {
   mostrarCargando(flujoNuevo ? 'Preparando recepcion...' : 'Preparando aprobacion...');
 
   try {
-    // 1. Extraer fileId del pdf_url de la OT.
+    // 1. Resolver fileId del PDF. v2.37.3: en flujo nuevo el PDF nacio lockeado
+    // (col Q vacia hasta que el receptor firma); el backend devuelve pdf_file_id
+    // resuelto desde Drive como fallback. OTs viejas siguen extrayendo del URL.
     const pdfUrl = String(_otEnAprobacion.pdf_url || '');
     const m = pdfUrl.match(/\/file\/d\/([^\/\?]+)/);
-    if (!m) throw new Error('No se pudo extraer fileId del pdf_url');
-    const fileId = m[1];
+    let fileId = m ? m[1] : '';
+    if (!fileId) fileId = String(_otEnAprobacion.pdf_file_id || '').trim();
+    if (!fileId) throw new Error('No se pudo localizar el PDF de la OT en Drive');
 
     // 2-5. Inyeccion al PDF: en flujo legacy va APROBACION + RECEPCION; en
     // flujo nuevo solo RECEPCION (la APROBACION del creador ya esta en el PDF
@@ -3051,11 +3064,13 @@ async function confirmarCierre() {
   mostrarCargando('Preparando cierre...');
 
   try {
-    // 1. Extraer fileId del pdf_url de la OT.
+    // 1. Resolver fileId del PDF. v2.37.3: usa pdf_file_id como fallback cuando
+    // pdf_url no tiene fileId extraible (raro en cierre, pero por consistencia).
     const pdfUrl = String(_otEnCierre.pdf_url || '');
     const mUrl = pdfUrl.match(/\/file\/d\/([^\/\?]+)/);
-    if (!mUrl) throw new Error('No se pudo extraer fileId del pdf_url');
-    const fileId = mUrl[1];
+    let fileId = mUrl ? mUrl[1] : '';
+    if (!fileId) fileId = String(_otEnCierre.pdf_file_id || '').trim();
+    if (!fileId) throw new Error('No se pudo localizar el PDF de la OT en Drive');
 
     // 2-5. Helper compartido v2.19: descarga + inyecta CIERRE + reupload IN-PLACE.
     // ORDEN IMPORTANTE: primero re-subimos el PDF firmado; despues marcamos

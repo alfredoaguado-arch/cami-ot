@@ -1,5 +1,5 @@
 // ================================================================
-// CAMI - Apps Script ORDENES DE TRABAJO v2.37
+// CAMI - Apps Script ORDENES DE TRABAJO v2.37.3
 // Bound al Sheet de OT (CAMI_OT_DB) - ID 12WU13Qp2DPXjaqAMuXg-yYYizuKqMU1K04v0nw0Ud7o
 //
 // REDISENIO COMPLETO vs v1.3:
@@ -48,7 +48,25 @@
 // Folder Drive Firmas:  (subcarpeta automatica dentro del folder de OT)
 // ================================================================
 
-const MODULE_VERSION = '2.37';
+const MODULE_VERSION = '2.37.3';
+// v2.37.3 (2026-06-27): hotfix — deadlock al firmar recepcion en OTs lockeadas.
+//   Sintoma: el modal de aprobacion lanzaba "No se pudo extraer fileId del
+//   pdf_url" y no permitia firmar la recepcion. Las OTs nuevas (v2.37 con
+//   firma supervisor) quedaban atascadas en APROBADA sin posibilidad de pasar
+//   a EN_PROCESO.
+//   Causa: el frontend necesita el fileId del PDF ANTES de llamar a aprobarOT
+//   porque inyecta la firma de recepcion con pdf-lib sobre el PDF descargado.
+//   Lo extraia de pdf_url, pero el flujo lockeado deja pdf_url VACIO hasta que
+//   handleAprobarOT libera el PDF — momento al que solo se llega DESPUES de
+//   firmar. Deadlock estructural del Sprint 3b.
+//   Fix: handleListarPorAprobar enriquece cada OT con `pdf_file_id`. Para OTs
+//   con pdf_url, lo extrae del URL. Para OTs APROBADAS sin pdf_url (flujo
+//   nuevo lockeado), llama a _resolverPDFFileIdPorCampos (refactor de
+//   _resolverPDFFileIdDeOT) que escanea Drive bajo FOLDER_ID/proyecto/etapa/
+//   buscando '{folio}.pdf' o '{primer_mark}_{folio}.pdf'. Cachea por
+//   (proyecto, etapa) para no escanear la misma carpeta N veces. Frontend
+//   v2.37.3 (en paralelo) usa pdf_file_id como fallback cuando pdf_url no
+//   tiene fileId extraible.
 // v2.37 (2026-06-27): Sprint 3 — OT por etapa SE + PDF lockeado pre-recepcion.
 //
 //   PARTE A — OT por etapa SE (lunes ensambles OWOW + BF2):
@@ -1772,6 +1790,23 @@ function handleListarPorAprobar(data) {
     const ots = leerOTsConDetalle(ss, function(estado) {
       return estado === 'PENDIENTE_APROBACION' || estado === 'APROBADA';
     });
+    // v2.37.3: el frontend necesita el fileId del PDF para inyectar firmas con
+    // pdf-lib ANTES de llamar a aprobarOT. Para OTs viejas extrae de pdf_url;
+    // para OTs nuevas lockeadas (v2.37 flujo nuevo: APROBADA con pdf_url vacio)
+    // resolvemos buscando en Drive. Cachea por (proyecto, etapa) para no escanear
+    // la misma carpeta N veces si hay varias OTs del mismo lote.
+    const cachePDF = {};
+    ots.forEach(function (ot) {
+      const m = String(ot.pdf_url || '').match(/\/file\/d\/([^\/\?]+)/);
+      if (m) { ot.pdf_file_id = m[1]; return; }
+      if (ot.estado !== 'APROBADA') { ot.pdf_file_id = ''; return; }
+      const key = String(ot.proyecto || '') + '|' + String(ot.etapa || '');
+      if (!Object.prototype.hasOwnProperty.call(cachePDF, key)) cachePDF[key] = {};
+      if (cachePDF[key][ot.folio] === undefined) {
+        cachePDF[key][ot.folio] = _resolverPDFFileIdPorCampos(ot.proyecto, ot.etapa, ot.folio);
+      }
+      ot.pdf_file_id = cachePDF[key][ot.folio];
+    });
     return jsonResp({ ok: true, ots: ots });
   } catch (err) {
     return jsonResp({ ok: false, error: err.message });
@@ -1948,6 +1983,23 @@ function handleListarPorCerrar(data) {
     // Listar APROBADA o EN_PROCESO (todavia no cerradas)
     const ots = leerOTsConDetalle(ss, function(estado) {
       return estado === 'APROBADA' || estado === 'EN_PROCESO';
+    });
+    // v2.37.3: enrichment con pdf_file_id, mismo patron que handleListarPorAprobar.
+    // El frontend del cierre tambien necesita el fileId para inyectar la firma de
+    // cierre con pdf-lib. Casi todas las OTs aqui ya estaran en EN_PROCESO con
+    // pdf_url poblado; el fallback aplica solo si alguien intenta cerrar una OT
+    // APROBADA lockeada (camino raro pero posible).
+    const cachePDF = {};
+    ots.forEach(function (ot) {
+      const m = String(ot.pdf_url || '').match(/\/file\/d\/([^\/\?]+)/);
+      if (m) { ot.pdf_file_id = m[1]; return; }
+      if (ot.estado !== 'APROBADA') { ot.pdf_file_id = ''; return; }
+      const key = String(ot.proyecto || '') + '|' + String(ot.etapa || '');
+      if (!Object.prototype.hasOwnProperty.call(cachePDF, key)) cachePDF[key] = {};
+      if (cachePDF[key][ot.folio] === undefined) {
+        cachePDF[key][ot.folio] = _resolverPDFFileIdPorCampos(ot.proyecto, ot.etapa, ot.folio);
+      }
+      ot.pdf_file_id = cachePDF[key][ot.folio];
     });
     return jsonResp({ ok: true, ots: ots });
   } catch (err) {
@@ -2180,15 +2232,28 @@ function obtenerFolderFirmas() {
 function _resolverPDFFileIdDeOT(folio, fila, shOT) {
   const proyecto = String(shOT.getRange(fila, 3).getValue() || '').trim();   // col C
   const etapa    = String(shOT.getRange(fila, 4).getValue() || '').trim();   // col D
-  if (!proyecto || !etapa) return '';
-  const folder = obtenerCarpetaProyectoEtapa(proyecto, etapa);
-  const sufijo = folio + '.pdf';
-  const it = folder.getFilesByType(MimeType.PDF);
-  while (it.hasNext()) {
-    const f = it.next();
-    const nm = f.getName();
-    if (nm === sufijo || nm.endsWith('_' + sufijo)) return f.getId();
-  }
+  return _resolverPDFFileIdPorCampos(proyecto, etapa, folio);
+}
+
+// v2.37.3: variante sin acceso al sheet. Usada por handleListarPorAprobar para
+// resolver el fileId de cada OT del listado (el frontend lo necesita ANTES de
+// firmar recepcion porque inyecta la firma con pdf-lib sobre el PDF descargado).
+// Para OTs lockeadas (pdf_url vacio), este es el unico camino.
+function _resolverPDFFileIdPorCampos(proyecto, etapa, folio) {
+  proyecto = String(proyecto || '').trim();
+  etapa    = String(etapa || '').trim();
+  folio    = String(folio || '').trim();
+  if (!proyecto || !etapa || !folio) return '';
+  try {
+    const folder = obtenerCarpetaProyectoEtapa(proyecto, etapa);
+    const sufijo = folio + '.pdf';
+    const it = folder.getFilesByType(MimeType.PDF);
+    while (it.hasNext()) {
+      const f = it.next();
+      const nm = f.getName();
+      if (nm === sufijo || nm.endsWith('_' + sufijo)) return f.getId();
+    }
+  } catch (e) { /* sin acceso a la carpeta o folder ausente: vacio */ }
   return '';
 }
 
