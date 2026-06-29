@@ -4,7 +4,21 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>CAMI — Orden de Trabajo</title>
-<!-- v2.37.3 (2026-06-27): hotfix deadlock — el modal de aprobacion fallaba con
+<!-- v2.37.4 (2026-07-01): fix bug BOM SE single-component en etapa SE (OWOW).
+     Reportado por Alfredo: SE-101EM1 (1 componente, 48 piezas en composicion,
+     qty_total vacio). Usuario teclea N=24 en chip esperando 24 piezas; el BOM
+     mostraba 1152 (= 24 × 48). Causa: bomActualizarFilasParaSEEnsamble (Sprint 3
+     v2.37.2) multiplica composicion.qty × N / qty_total para escalar por
+     instancias. En OWOW qty_total=1 (default) → divisor=1, multiplicacion
+     N × composicion.qty. Conceptualmente erroneo: el SE OWOW no es "1 instancia
+     con 48 piezas" sino "48 piezas agrupadas bajo nombre logico".
+     Fix: detectar caso "single-component + qty_total vacio" → BOM lleva N tal cual.
+     Default del chip ajustado al mismo patron: BF2 (qty_total>0) → qty_total;
+     OWOW single-component → componente.qty (48); OWOW multi-component → 1 (set).
+     Caso (C) multi-component sin qty_total preservado por compat (multiplicador
+     del set, ej. N=2 fabrica dos sets completos). Si en OWOW no existen
+     multi-hijo, ese caso no se dispara.
+     v2.37.3 (2026-06-27): hotfix deadlock — el modal de aprobacion fallaba con
      "No se pudo extraer fileId del pdf_url" en OTs nuevas (lockeadas). Causa:
      el front necesita el fileId ANTES de aprobarOT porque inyecta la firma con
      pdf-lib sobre el PDF descargado. Lo extraia de pdf_url, pero el flujo
@@ -1297,9 +1311,19 @@ async function agregarItem(idx) {
       renderizarChips();
       bomAgregarFilasParaSubensamble(item);
     } else {
-      // v2.37.2: qty_lote default = qty_total del SE (BF2 SE-BFG=24 / OWOW=1).
-      // El usuario lo edita inline en el chip; cada cambio dispara recalculo del BOM.
-      item.qtyLote = Number(item.qty_total) > 0 ? Number(item.qty_total) : 1;
+      // v2.37.4: default del chip por tres casos (paralelo a bomActualizarFilasParaSEEnsamble):
+      //   (A) qty_total > 0 (BF2)            → default = qty_total (todas las instancias).
+      //   (B) qty_total vacio + 1 hijo (OWOW) → default = componente.qty (las 48 piezas del SE).
+      //   (C) qty_total vacio + N hijos      → default = 1 (un set completo del SE).
+      const hijosDelSE = _hijosPorSE[item.label] || [];
+      const qtyTotal = Number(item.qty_total) > 0 ? Number(item.qty_total) : 0;
+      if (qtyTotal > 0) {
+        item.qtyLote = qtyTotal;
+      } else if (hijosDelSE.length === 1) {
+        item.qtyLote = Number(hijosDelSE[0].qty) > 0 ? Number(hijosDelSE[0].qty) : 1;
+      } else {
+        item.qtyLote = 1;
+      }
       renderizarChips();   // pinta el input de qty al lado del chip
       bomActualizarFilasParaSEEnsamble(item, item.qtyLote);
     }
@@ -1462,17 +1486,51 @@ function bomActualizarFilasParaSEEnsamble(seItem, qtyInstancias) {
     bomAgregarFilaParaSE(seItem);
     return;
   }
-  const qtyTotalSE = Number(seItem.qty_total) > 0 ? Number(seItem.qty_total) : 1;
+  // v2.37.4: tres casos de calculo de qty por fila del BOM:
+  //
+  //   (A) BF2 / qty_total POBLADO (>0): multi-instancia. El usuario teclea N
+  //       instancias del SE. Cada componente se escala por N/qty_total — la
+  //       qty en composicion ya es el total del componente en el proyecto
+  //       (ej. BF2 BFG-4 qty=24 = 1 placa × 24 instancias). N=8 da 8 placas.
+  //
+  //   (B) OWOW / qty_total VACIO + 1 SOLO HIJO: bug v2.37.2. El SE no
+  //       representa N instancias sino "un conjunto de M piezas de UN
+  //       componente". El usuario teclea N = piezas a fabricar directas (24
+  //       de las 48). Multiplicar por composicion.qty arroja 1152 (24×48),
+  //       conceptualmente erroneo. Fix: la fila del BOM lleva N tal cual.
+  //
+  //   (C) OWOW / qty_total VACIO + MULTI-HIJO: el SE es un grupo logico de
+  //       componentes (ej. ensamble con columnas+vigas+placas). El usuario
+  //       teclea N = multiplicador del grupo (N=1 fabrica el set completo;
+  //       N=2 fabrica dos sets). Igual que hoy: composicion.qty × N por
+  //       cada componente. Si en OWOW no existen multi-hijo, este caso no
+  //       se dispara — preservado por compatibilidad.
+  const qtyTotalSE = Number(seItem.qty_total) > 0 ? Number(seItem.qty_total) : 0;
   const N = Number(qtyInstancias) > 0 ? Number(qtyInstancias) : 1;
   const itemPorMark = {};
   _itemsCache.forEach(it => { itemPorMark[it.mark] = it; });
+
+  // CASO (B): SE single-component sin qty_total. N entra directo al BOM.
+  if (qtyTotalSE === 0 && hijos.length === 1) {
+    const h = hijos[0];
+    const child = itemPorMark[h.componente_id] || {};
+    const label = child.label || h.label_componente || h.componente_id;
+    const desc  = child.descripcion || h.desc_componente || '';
+    const mat   = child.material || '';
+    const partes = [label, desc, mat].map(p => String(p || '').trim()).filter(p => p);
+    bomAnexarFila(partes.join(' · '), N, seItem.mark);
+    return;
+  }
+
+  // CASOS (A) y (C): multi-instancia o multi-componente. Calculo legacy.
+  const divisor = qtyTotalSE > 0 ? qtyTotalSE : 1;
   hijos.forEach(h => {
     const child = itemPorMark[h.componente_id] || {};
     const label = child.label || h.label_componente || h.componente_id;
     const desc  = child.descripcion || h.desc_componente || '';
     const mat   = child.material || '';
     const partes = [label, desc, mat].map(p => String(p || '').trim()).filter(p => p);
-    const qtyPorInstancia = (Number(h.qty) || 0) / qtyTotalSE;
+    const qtyPorInstancia = (Number(h.qty) || 0) / divisor;
     const qtyEnLote = qtyPorInstancia * N;
     bomAnexarFila(partes.join(' · '), qtyEnLote, seItem.mark);
   });
