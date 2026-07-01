@@ -1,5 +1,5 @@
 // ================================================================
-// CAMI - Apps Script ORDENES DE TRABAJO v2.37.3
+// CAMI - Apps Script ORDENES DE TRABAJO v2.37.5
 // Bound al Sheet de OT (CAMI_OT_DB) - ID 12WU13Qp2DPXjaqAMuXg-yYYizuKqMU1K04v0nw0Ud7o
 //
 // REDISENIO COMPLETO vs v1.3:
@@ -48,7 +48,34 @@
 // Folder Drive Firmas:  (subcarpeta automatica dentro del folder de OT)
 // ================================================================
 
-const MODULE_VERSION = '2.37.3';
+const MODULE_VERSION = '2.37.5';
+// v2.37.5 (2026-07-07): fix — cerrar el hueco "APROBADA -> COMPLETADA directo"
+//   que saltaba la firma de recepcion.
+//   Reportado por Alfredo: OT creada el 7-jul paso de CREADA a COMPLETADA sin
+//   pasar por APROBAR. OT_FIRMAS solo tiene APROBACION (supervisor al crear) +
+//   CIERRE (supervisor al cerrar) — falta RECEPCION del receptor. El PDF final
+//   quedo con 2 firmas visibles en vez de 3, sin la firma de recepcion inyectada.
+//   Causa (bug de omision del sprint v2.34 26-jun): cuando se introdujo el
+//   modelo A (OT nace APROBADA con firma_supervisor), NADIE cerro la puerta
+//   trasera de handleCerrarOT + handleListarPorCerrar que aceptan APROBADA como
+//   estado valido para cerrar. Esa puerta viene del 27-mayo (778f977b), cuando
+//   el flujo era otro. Desde el 26-jun coexisten dos rutas: la correcta
+//   (APROBADA -> EN_PROCESO -> COMPLETADA con 3 firmas) y la con hueco
+//   (APROBADA -> COMPLETADA directo con 2 firmas). No es regresion — es un
+//   hueco de diseno que estuvo en produccion 6 semanas sin que se usara hasta
+//   hoy.
+//   Fix quirurgico, dos lineas:
+//   - handleListarPorCerrar filtra SOLO EN_PROCESO (antes: APROBADA o EN_PROCESO).
+//     Asi la OT en APROBADA NO aparece en la pestana CERRAR — obliga a pasar
+//     por APROBAR (firma receptor + PDF re-inyectado con la firma).
+//   - handleCerrarOT rechaza APROBADA: 'Debe estar en EN_PROCESO — pasar antes
+//     por Aprobar/Recibir para firmar la recepcion'.
+//   OTs viejas huerfanas en APROBADA quedan bloqueadas hasta que alguien firme
+//   la recepcion. Decision consciente de Alfredo: se procesan a mano para el
+//   registro (son pocas).
+//   Sin cambios frontend — la pestana CERRAR simplemente muestra menos OTs.
+//   Deploy: pegar backend en editor + Deploy > Gestionar implementaciones >
+//   Editar > Version nueva > Implementar. Ping debe responder version:'2.37.5'.
 // v2.37.3 (2026-06-27): hotfix — deadlock al firmar recepcion en OTs lockeadas.
 //   Sintoma: el modal de aprobacion lanzaba "No se pudo extraer fileId del
 //   pdf_url" y no permitia firmar la recepcion. Las OTs nuevas (v2.37 con
@@ -1980,20 +2007,25 @@ function handleListarPorCerrar(data) {
 
   try {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
-    // Listar APROBADA o EN_PROCESO (todavia no cerradas)
+    // v2.37.5: cerrar el hueco APROBADA -> COMPLETADA que saltaba la firma
+    // de recepcion. Solo listar EN_PROCESO — asi la OT esta OBLIGADA a pasar
+    // por APROBAR (firma receptor + PDF re-inyectado) antes de poder cerrarse.
+    // OTs viejas huerfanas en APROBADA quedan bloqueadas hasta que alguien
+    // firme la recepcion (decision consciente de Alfredo — se procesan a mano
+    // para el registro historico, ~7-jul-2026).
     const ots = leerOTsConDetalle(ss, function(estado) {
-      return estado === 'APROBADA' || estado === 'EN_PROCESO';
+      return estado === 'EN_PROCESO';
     });
     // v2.37.3: enrichment con pdf_file_id, mismo patron que handleListarPorAprobar.
-    // El frontend del cierre tambien necesita el fileId para inyectar la firma de
-    // cierre con pdf-lib. Casi todas las OTs aqui ya estaran en EN_PROCESO con
-    // pdf_url poblado; el fallback aplica solo si alguien intenta cerrar una OT
-    // APROBADA lockeada (camino raro pero posible).
+    // El frontend del cierre necesita el fileId para inyectar la firma de cierre
+    // con pdf-lib. Casi todas las OTs aqui ya estan en EN_PROCESO con pdf_url
+    // poblado (handleAprobarOT lo escribe al liberar el PDF); el fallback a Drive
+    // solo cubre el edge case donde la liberacion fallo (Drive timeout, etc).
     const cachePDF = {};
     ots.forEach(function (ot) {
       const m = String(ot.pdf_url || '').match(/\/file\/d\/([^\/\?]+)/);
       if (m) { ot.pdf_file_id = m[1]; return; }
-      if (ot.estado !== 'APROBADA') { ot.pdf_file_id = ''; return; }
+      // pdf_url vacio en EN_PROCESO: buscar en Drive como fallback.
       const key = String(ot.proyecto || '') + '|' + String(ot.etapa || '');
       if (!Object.prototype.hasOwnProperty.call(cachePDF, key)) cachePDF[key] = {};
       if (cachePDF[key][ot.folio] === undefined) {
@@ -2028,8 +2060,10 @@ function handleCerrarOT(data) {
     const shOT = ss.getSheetByName(H_OT);
     const ubicado = ubicarOT(shOT, folio);
     if (!ubicado.fila) return jsonResp({ ok: false, error: 'OT no encontrada' });
-    if (ubicado.estado !== 'APROBADA' && ubicado.estado !== 'EN_PROCESO') {
-      return jsonResp({ ok: false, error: 'Esta OT no se puede cerrar (estado ' + ubicado.estado + ')' });
+    // v2.37.5: solo EN_PROCESO. Cierra el hueco heredado del 27-mayo (778f977b)
+    // que aceptaba APROBADA y permitia saltar la firma de recepcion.
+    if (ubicado.estado !== 'EN_PROCESO') {
+      return jsonResp({ ok: false, error: 'Esta OT no se puede cerrar (estado ' + ubicado.estado + '). Debe estar en EN_PROCESO — pasar antes por Aprobar/Recibir para firmar la recepcion.' });
     }
 
     // 1. Guardar firma de cierre
