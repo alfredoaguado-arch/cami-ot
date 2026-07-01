@@ -29,7 +29,7 @@ CAMI es una plataforma modular para operación interna (construcción / manufact
 
 `cami-ot` es el módulo de **órdenes de trabajo**. Es donde el supervisor o admin crea una OT formal asociada a un procedimiento sobre uno o varios items, captura los detalles, genera un PDF firmable y lo guarda en Drive.
 
-**Versión actual:** v2.8 (frontend Fase 1 + backend Apps Script v2.8).
+**Versión actual:** **v2.37.4 frontend / v2.37.3 backend** (sprint 3 OT por etapa SE + PDF lockeado pre-recepción + fix BOM SE single-component, 01-jul-2026).
 
 **Características clave de v2.0** (rediseño completo, 27-abr-2026):
 - Estados de workflow definidos (BORRADOR → EN PROCESO → CERRADA)
@@ -54,6 +54,19 @@ CAMI es una plataforma modular para operación interna (construcción / manufact
 - **PDF con sección "MARKS DEL LOTE":** tabla `# | Mark | Descripción | Qty | Material` antes del BOM. Solo se renderiza si `d.items?.length > 0`.
 - **Hoja nueva OT_LOTE_MARKS (v2.8 backend):** persistencia estructurada de marks por OT (`id_lote, folio, proyecto, mark, qty, plano, estado_lote, cerrado_por, fecha_cierre, timestamp_creacion`). `handleCrearOT` escribe con `estado_lote='CREADO'`; `handleCerrarOT` actualiza a `CERRADO` con `cerrado_por`+`fecha_cierre`. La sábana de seguimiento futura consume esta hoja.
 - **Fase 2 (ENSAMBLE) pendiente post-6-jun:** mismo patrón inverso (etapa `ENSAMBLE` filtraría solo SE; BOM derivado vía COMPOSICION cargada).
+
+**Añadido en v2.36–v2.37.4 (Sprint 3 OT por etapa SE, 26-jun a 01-jul-2026):**
+- **`CAT_ITEMS.qty_total` (col P, v2.36):** declara instancias del SE en el proyecto. Vacío = 1 (default OWOW: cada SE es único). BF2 SE-BFG = 24 (24 marcos idénticos). El frontend (`bomActualizarFilasParaSEEnsamble`) escala componentes por `composicion.qty / qty_total × N_chip` cuando hay multi-instancia.
+- **OT por etapa SE (v2.37):** `_itemAplicaEnEtapa` filtra el chip-picker por etapa — SE solo aparecen en etapas SE (PRE/SOLD/PREP/ACAB/EMB), MK solo en HAB. Cada SE en etapa SE entra al BOM como **expansión de componentes** (no como fila única).
+- **Firma desacoplada (v2.34):** `handleCrearOT` acepta `firma_supervisor` (PNG b64) → OT salta a `APROBADA` directo. `handleAprobarOT` enruta por estado: PENDIENTE_APROBACION (legacy, 2 firmas) o APROBADA (nuevo, solo firma_recepción → EN_PROCESO).
+- **Cancelar OT post-aprobación (v2.35):** `handleRechazarOT` acepta APROBADA y EN_PROCESO. Log etiquetado `CANCELADA` vs `RECHAZADA`. COMPLETADA no se permite cancelar.
+- **PDF lockeado pre-recepción (v2.37 Sprint 3b):** OT con `firma_supervisor` → PDF **privado** en Drive, col Q vacía. `handleAprobarOT` libera (sharing + col Q) al firmar recepción. `handleAbrirPDF` con QR muestra "OT pendiente de recepción" hasta que pase a EN_PROCESO.
+- **Hotfix v2.37.3 deadlock fileId:** `handleListarPorAprobar` enriquece cada OT con `pdf_file_id` (extraído del URL si existe, resuelto desde Drive vía `_resolverPDFFileIdPorCampos` si está lockeada). El frontend usa pdf_file_id como fallback para inyectar la firma con pdf-lib antes de aprobarOT.
+- **Fix v2.37.4 BOM SE single-component (OWOW 101EM1):** SE con qty_total vacío y 1 hijo → N en chip = piezas directas (no instancias), default chip = componente.qty (48). Sin multiplicación. BF2 (qty_total > 0) preserva math original. Multi-component sin qty_total preserva math legacy como multiplicador del set.
+
+**Pendiente (a futuro):**
+- Integración full con cami-procesos (Fase 2 ENSAMBLE ya desbloqueada por v2.37, falta cablear en producción).
+- Reglas avanzadas de pre-chequeo de marks (v2.22 hizo el primer pase).
 
 ## 3. Patrón de PDF (compartido con todo el ecosistema)
 
@@ -152,6 +165,7 @@ Los reportes fotográficos pueden ligarse a una OT por folio. El módulo de repo
 - Editar en el editor de Apps Script bound al sheet del módulo
 - Deploy → Manage deployments → ✏️ → New version → Deploy
 - La URL del endpoint NO cambia entre versiones
+- ⚠️ **Verificar el deploy tras desplegar:** `GET ?accion=ping` debe devolver el `MODULE_VERSION` del repo. Si reporta una versión vieja, el backend quedó **atrasado** (se editó el código pero no se creó "Versión nueva"). Incidente 29-jun-2026: el ping decía `2.37` con el repo en `2.37.3` → toda creación de OT mostraba `"Accion desconocida: "` (vacío) en el pre-chequeo de marks; el POST llegaba sin body al backend desfasado. Redeploy a `2.37.3` + hard refresh lo resolvió. Para sondear por CLI: `curl -sL --data '{...}' <URL>` (NO `-X POST`: Apps Script redirige 302 y curl debe degradar a GET).
 
 ## 9. Notas operativas
 
