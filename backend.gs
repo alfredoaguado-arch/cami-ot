@@ -1,5 +1,5 @@
 // ================================================================
-// CAMI - Apps Script ORDENES DE TRABAJO v2.37.5
+// CAMI - Apps Script ORDENES DE TRABAJO v2.37.6  (cache de token en CacheService · mata falsos "sesión expirada" bajo carga)
 // Bound al Sheet de OT (CAMI_OT_DB) - ID 12WU13Qp2DPXjaqAMuXg-yYYizuKqMU1K04v0nw0Ud7o
 //
 // REDISENIO COMPLETO vs v1.3:
@@ -48,7 +48,12 @@
 // Folder Drive Firmas:  (subcarpeta automatica dentro del folder de OT)
 // ================================================================
 
-const MODULE_VERSION = '2.37.5';
+const MODULE_VERSION = '2.37.6';
+// v2.37.6 (2026-07-06): CACHE de validación de token en CacheService del módulo (TTL 300s) + retry-once
+//                    para matar los falsos "sesión expirada" bajo carga (el central se satura de
+//                    validaciones cuando el equipo trabaja + capturas repetidas). Ver validarTokenCentral.
+//                    Tras pegar+desplegar, verificar GET ?accion=ping devuelve "2.37.6". Fix espejo de
+//                    cami-calidad backend v0.7 (misma causa raíz, mismo remedio).
 // v2.37.5 (2026-07-07): fix — cerrar el hueco "APROBADA -> COMPLETADA directo"
 //   que saltaba la firma de recepcion.
 //   Reportado por Alfredo: OT creada el 7-jul paso de CREADA a COMPLETADA sin
@@ -2378,23 +2383,47 @@ function generarFolio(ss, proyecto, fechaStr, etapa) {
 
 // ── VALIDACION DE TOKEN VIA HTTP AL CENTRAL ────────────────────
 
+// v2.37.6 (2026-07-06): CACHE de validación OK en CacheService del módulo (TTL 300s) + RETRY-ONCE ante
+//   fallo transitorio del central. Causa raíz de los falsos "sesión expirada" bajo carga: cada acción
+//   valida el token contra el central por HTTP; con el equipo trabajando + capturas repetidas (2ª/3ª OT
+//   reutilizando el formulario) se satura el central (invocaciones simultáneas / cuota Apps Script) y
+//   algunas validaciones fallan → el módulo cree que la sesión expiró y saca al usuario (acumulativo,
+//   intermitente, a todos). El cache hace que una ráfaga golpee al central UNA vez (el resto lee del
+//   cache) → ~90% menos llamadas → se acaba la saturación. Solo cachea el POSITIVO (un token nuevo nunca
+//   queda bloqueado). Ventana de gracia si se revoca/expira: ≤300s (despreciable vs TTL 4h del central).
 function validarTokenCentral(token) {
+  token = String(token || '').trim();
+  if (!token) return null;
+  var cache = null; var ckey = 'authok_' + token;
   try {
-    const resp = UrlFetchApp.fetch(CENTRAL_URL, {
-      method: 'post',
-      contentType: 'application/json',
-      payload: JSON.stringify({ action: 'validarToken', token: token }),
-      muteHttpExceptions: true,
-      followRedirects: true
-    });
-    if (resp.getResponseCode() !== 200) return null;
-    const body = JSON.parse(resp.getContentText());
-    if (body && body.ok && body.usuario) return body.usuario;
-    return null;
-  } catch (err) {
-    console.error('Error validando token:', err.message);
-    return null;
+    cache = CacheService.getScriptCache();
+    var hit = cache.get(ckey);
+    if (hit) { try { return JSON.parse(hit); } catch (e) {} }
+  } catch (e) { cache = null; }
+  for (var intento = 0; intento < 2; intento++) {
+    try {
+      const resp = UrlFetchApp.fetch(CENTRAL_URL, {
+        method: 'post',
+        contentType: 'application/json',
+        payload: JSON.stringify({ action: 'validarToken', token: token }),
+        muteHttpExceptions: true,
+        followRedirects: true
+      });
+      if (resp.getResponseCode() === 200) {
+        const body = JSON.parse(resp.getContentText());
+        if (body && body.ok && body.usuario) {
+          if (cache) { try { cache.put(ckey, JSON.stringify(body.usuario), 300); } catch (e) {} }
+          return body.usuario;
+        }
+        return null;   // respuesta válida del central: token inválido → no reintentar (ni cachear)
+      }
+      // non-200 → fallo transitorio → cae al reintento
+    } catch (err) {
+      console.error('Error validando token (intento ' + (intento + 1) + '):', err.message);
+    }
+    if (intento === 0) Utilities.sleep(400);
   }
+  return null;
 }
 
 // ── HELPERS ────────────────────────────────────────────────────
