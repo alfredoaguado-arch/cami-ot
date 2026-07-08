@@ -4,7 +4,14 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>CAMI — Orden de Trabajo</title>
-<!-- v2.37.4 (2026-07-01): fix bug BOM SE single-component en etapa SE (OWOW).
+<!-- v2.38 (2026-07-06): aviso TEMPRANO de marca duplicada. Antes, el anti-duplicado (prechequeoMarks
+     v2.22) solo avisaba al presionar "Crear OT", tras llenar toda la OT. Ahora, al AGREGAR la marca al
+     lote (agregarItem), se dispara el chequeo de esa marca contra su etapa: si ya está 100% comprometida
+     ('bloqueo'), el chip se pinta en ROJO con badge "ya existe" + toast con los folios donde ya está.
+     No la quita automáticamente (el supervisor decide); el chequeo final al Crear OT sigue bloqueando
+     duro. Frontend-only (cero backend nuevo; reusa prechequeoMarks). Ver verificarDuplicadoMark.
+     ── v2.37.4 ──
+     v2.37.4 (2026-07-01): fix bug BOM SE single-component en etapa SE (OWOW).
      Reportado por Alfredo: SE-101EM1 (1 componente, 48 piezas en composicion,
      qty_total vacio). Usuario teclea N=24 en chip esperando 24 piezas; el BOM
      mostraba 1152 (= 24 × 48). Causa: bomActualizarFilasParaSEEnsamble (Sprint 3
@@ -1332,6 +1339,35 @@ async function agregarItem(idx) {
     bomAgregarFilaParaMark(item);
   }
   actualizarPlanosDelLote();
+  verificarDuplicadoMark(item);   // v2.38: aviso TEMPRANO si la marca ya tiene OT en esta etapa
+}
+
+// v2.38: chequeo temprano de duplicado al agregar una marca al lote (antes solo se avisaba
+// al presionar "Crear OT", tras llenar todo). Reusa prechequeoMarks (cero backend nuevo).
+// Si la marca ya está 100% comprometida en la etapa (veredicto 'bloqueo') → marca el chip en
+// rojo con badge "ya existe" + toast con los folios. Fire-and-forget: si falla, el chequeo
+// final al Crear OT sigue cubriendo. bloqueo es independiente de la qty (comprometido>=total).
+async function verificarDuplicadoMark(item) {
+  if (!item) return;
+  try {
+    const proyecto = document.getElementById('proyecto').value;
+    const etapa    = document.getElementById('etapa').value;
+    const token    = getToken();
+    if (!proyecto || !etapa || !token) return;
+    const pc = await prechequeoMarks(token, proyecto, etapa, [{ mark: item.mark, qty: (item.qtyLote || 1) }]);
+    // el usuario pudo quitar la marca o cambiar de proyecto/etapa mientras esperábamos
+    const vivo = _itemsActuales.find(i => i.mark === item.mark);
+    if (!vivo) return;
+    const r = (pc.resultados || []).find(x => x.mark === item.mark);
+    if (r && r.veredicto === 'bloqueo') {
+      vivo._dup = { total: r.total, comprometido: r.comprometido, folios: r.folios || [], etapa: etapa };
+      renderizarChips();
+      const foliosTxt = (r.folios && r.folios.length)
+        ? (' — ' + r.folios.map(f => f.folio + ' (' + f.estado + ')').join(', '))
+        : '';
+      showToast('⚠ ' + (item.label || item.mark) + ': YA EXISTE OT en ' + etapa + ' (' + r.comprometido + '/' + r.total + ' pz)' + foliosTxt, 'err');
+    }
+  } catch (e) { /* silencioso: el pre-chequeo final (al Crear OT) sigue validando */ }
 }
 
 // F2: saca un mark del lote por su id canónico.
@@ -1360,14 +1396,21 @@ function renderizarChips() {
     const display = escapeHtml(it.label || it.mark);
     const markJson = JSON.stringify(it.mark);  // escapa cualquier carácter en el mark
     const tieneQty = (it.qtyLote !== undefined);
+    // v2.38: si la marca ya tiene OT en esta etapa, el chip va en rojo con badge "ya existe".
+    const dup = it._dup;
+    const bg  = dup ? '#FCEBEB' : '#EAF3DE';
+    const fg  = dup ? '#A32D2D' : '#3B6D11';
     const qtyInput = tieneQty
-      ? `<span style="font-size:11px;color:#3B6D11;opacity:.75">qty</span>
+      ? `<span style="font-size:11px;color:${fg};opacity:.75">qty</span>
          <input type="number" min="1" step="1" value="${it.qtyLote}"
                 onchange='onChipQtyChange(${markJson}, this.value)'
                 title="Instancias del subensamble en esta OT"
-                style="width:54px;padding:3px 6px;font-size:13px;font-weight:700;border:1px solid #3B6D11;border-radius:6px;text-align:center;background:#fff;color:#1a1a18">`
+                style="width:54px;padding:3px 6px;font-size:13px;font-weight:700;border:1px solid ${fg};border-radius:6px;text-align:center;background:#fff;color:#1a1a18">`
       : '';
-    return `<span style="display:inline-flex;align-items:center;gap:6px;padding:4px 4px 4px 10px;background:#EAF3DE;border-radius:14px;color:#3B6D11;font-weight:700">${display}${qtyInput}<button type="button" onclick='quitarItem(${markJson})' aria-label="Quitar" style="background:none;border:none;color:#3B6D11;font-size:16px;cursor:pointer;padding:0 6px;line-height:1">&times;</button></span>`;
+    const badge = dup
+      ? `<span title="Ya comprometida ${dup.comprometido}/${dup.total} pz en ${escapeHtml(dup.etapa)}${(dup.folios&&dup.folios.length)?(' · '+escapeHtml(dup.folios.map(f=>f.folio).join(', '))):''}" style="font-size:10px;font-weight:800;background:#A32D2D;color:#fff;border-radius:8px;padding:1px 7px;letter-spacing:.03em">ya existe</span>`
+      : '';
+    return `<span style="display:inline-flex;align-items:center;gap:6px;padding:4px 4px 4px 10px;background:${bg};border-radius:14px;color:${fg};font-weight:700">${display}${qtyInput}${badge}<button type="button" onclick='quitarItem(${markJson})' aria-label="Quitar" style="background:none;border:none;color:${fg};font-size:16px;cursor:pointer;padding:0 6px;line-height:1">&times;</button></span>`;
   }).join('');
   cont.style.display = 'flex';
 }
