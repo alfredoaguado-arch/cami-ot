@@ -48,7 +48,13 @@
 // Folder Drive Firmas:  (subcarpeta automatica dentro del folder de OT)
 // ================================================================
 
-const MODULE_VERSION = '2.37.6';
+const MODULE_VERSION = '2.38.0';
+// v2.38.0 (2026-07-14): endpoint GET público listaMarkMerge — lee la hoja CAT_MARK_MERGE
+//                    (old_canon → new_canon) que crea la migración de planos OWOW. La sábana de
+//                    cami-procesos lo consume para canonicalizar marcas viejas (fusionadas/relabeladas)
+//                    y hacer roll-up del historial al mark nuevo. Aditivo: si la hoja no existe,
+//                    devuelve lista vacía (comportamiento previo intacto). Tras desplegar, verificar
+//                    GET ?accion=ping = "2.38.0".
 // v2.37.6 (2026-07-06): CACHE de validación de token en CacheService del módulo (TTL 300s) + retry-once
 //                    para matar los falsos "sesión expirada" bajo carga (el central se satura de
 //                    validaciones cuando el equipo trabaja + capturas repetidas). Ver validarTokenCentral.
@@ -414,6 +420,7 @@ function doGet(e) {
     if (accion === 'listaItemsPorProyecto') return handleListaItemsPorProyecto(e.parameter.proyecto || '');
     if (accion === 'listaComposicion')      return handleListaComposicion(e.parameter.proyecto || '');
     if (accion === 'listaLoteMarks')        return handleListaLoteMarks(e.parameter.proyecto || '');
+    if (accion === 'listaMarkMerge')        return handleListaMarkMerge(e.parameter.proyecto || '');
     if (accion === 'pdfCorteBarras')        return handlePdfCorteBarras(e.parameter.proyecto || '', e.parameter.folio || '');
     if (accion === 'listaPlanosPorProyecto') return handleListaPlanosPorProyecto(e.parameter.proyecto || '');
     if (accion === 'listaChecklist')   return handleListaChecklist(e.parameter.etapa || '');
@@ -618,6 +625,26 @@ function handleListaLoteMarks(proyecto) {
     });
   }
   return jsonResp({ ok: true, proyecto: proyecto, total: marks.length, marks: marks });
+}
+
+// ── listaMarkMerge (v2.38 — GET publico, SOLO LECTURA) ─────────────
+// Devuelve el mapeo old_canon -> new_canon de la hoja CAT_MARK_MERGE (creada por la migracion
+// de planos OWOW: marcas fusionadas/relabeladas). La sabana de cami-procesos lo usa para
+// canonicalizar marcas viejas antes de agregar cierres de OT / disposiciones, para que el
+// historial (ej. habilitado hecho de 419PL1) haga roll-up al mark nuevo (430PL1). Si la hoja
+// aun no existe (antes de la migracion), devuelve lista vacia -> comportamiento previo intacto.
+// El parametro proyecto se acepta por consistencia; hoy la hoja es global al Sheet.
+function handleListaMarkMerge(proyecto) {
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('CAT_MARK_MERGE');
+  if (!sh) return jsonResp({ ok: true, total: 0, merges: [] });
+  const rows = sh.getDataRange().getValues();
+  const merges = [];
+  for (let i = 1; i < rows.length; i++) {
+    const o = String(rows[i][0] || '').trim();   // col 1 old_canon
+    const n = String(rows[i][1] || '').trim();   // col 2 new_canon
+    if (o && n) merges.push({ old_canon: o, new_canon: n });
+  }
+  return jsonResp({ ok: true, total: merges.length, merges: merges });
 }
 
 // ── pdfCorteBarras (v2.23 — GET publico, SOLO LECTURA del Sheet) ───
