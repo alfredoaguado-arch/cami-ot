@@ -1,5 +1,5 @@
 // ================================================================
-// CAMI - Apps Script ORDENES DE TRABAJO v2.37.6  (cache de token en CacheService · mata falsos "sesión expirada" bajo carga)
+// CAMI - Apps Script ORDENES DE TRABAJO v2.38.0  (endpoint listaMarkMerge · roll-up de sábana tras migración de planos REV0)
 // Bound al Sheet de OT (CAMI_OT_DB) - ID 12WU13Qp2DPXjaqAMuXg-yYYizuKqMU1K04v0nw0Ud7o
 //
 // REDISENIO COMPLETO vs v1.3:
