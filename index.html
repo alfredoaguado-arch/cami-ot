@@ -4,12 +4,10 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>CAMI — Orden de Trabajo</title>
-<!-- v2.39 (2026-07-17): modo REGENERAR (temporal) — panel arriba de "Crear OT" que precarga las 37 OTs
-     canceladas por la actualización de planos REV0. Elegir una → prefill de proyecto/etapa/entrega +
-     marcas correctas (mismo mark o mark_nuevo según CAT_MARK_MERGE); VERIFICAR se lista aparte para
-     ingeniería. El supervisor revisa qty, firma y crea → OT en 'por aprobar'. Datos embebidos
-     (REGEN_DATA). Reusa agregarItem/onProyectoChange/onEtapaChange; no toca el flujo de creación.
-     Quitar el bloque REGEN_DATA + panel cuando se terminen de regenerar. Ver LISTA_OTs_a_regenerar.txt.
+<!-- v2.40 (2026-07-17): RETIRADO el panel Regenerar de v2.39. El prefill no servía: los marks del
+     OT_LOTE_MARKS histórico ya no cuadran tras la migración de catálogo (marcas archivadas/relabeladas),
+     así que las OTs canceladas se rehacen a mano. Se quitó el panel #regen-panel + el bloque REGEN_DATA
+     para no dejar una herramienta engañosa en producción. El flujo de crear OT queda idéntico a v2.38.
      ── v2.38 ──
      v2.38 (2026-07-06): aviso TEMPRANO de marca duplicada. Antes, el anti-duplicado (prechequeoMarks
      v2.22) solo avisaba al presionar "Crear OT", tras llenar toda la OT. Ahora, al AGREGAR la marca al
@@ -326,14 +324,6 @@ textarea{resize:vertical;min-height:60px}
   <!-- ── PESTAÑA: CREAR ── -->
   <div class="tab-content active" id="content-crear">
     <div class="form-body">
-      <!-- Regenerar OTs canceladas por actualización de planos REV0 (temporal). Prefill del form. -->
-      <div class="section" id="regen-panel" style="display:none;border:2px dashed #b8860b;background:#fffdf3">
-        <div class="section-title" style="cursor:pointer;user-select:none" onclick="toggleRegenLista()">
-          🔄 Regenerar OT (planos REV0) — <span id="regen-count">0</span> pendientes <span id="regen-caret">▼</span>
-        </div>
-        <div id="regen-lista" style="display:none;max-height:280px;overflow:auto;margin-top:8px"></div>
-        <div id="regen-aviso" style="display:none;font-size:12px;color:#8a6d00;margin-top:8px;line-height:1.5"></div>
-      </div>
       <div class="section">
         <div class="section-title">Datos de la Orden</div>
         <div style="margin-bottom:14px">
@@ -1357,77 +1347,6 @@ async function agregarItem(idx) {
   verificarDuplicadoMark(item);   // v2.38: aviso TEMPRANO si la marca ya tiene OT en esta etapa
 }
 
-// ===================== REGENERAR OTs canceladas por planos REV0 (temporal) =====================
-// Prefill del formulario de crear OT a partir de las 37 OTs canceladas. El supervisor solo revisa
-// qty, pone Responsable, firma y crea → la OT nace APROBADA (por aprobar) con planos/marcas correctas.
-// Datos embebidos (regen_data.json): [{f:folio, e:etapa, ent:entrega, m:[[mark,qty,accion,viejo]]}].
-// accion: MISMO_MARK (usa mark) · USAR_MARK_NUEVO (usa mark, ya es el nuevo) · VERIFICAR (no se agrega).
-const REGEN_DATA = [{"f":"HAR-HAB-025-2026-07-09","e":"HABILITADO","ent":"2026-07-11","m":[["MK-084548BB","1","MISMO_MARK","MK-084548BB"],["MK-1DAEA865","1","MISMO_MARK","MK-1DAEA865"],["MK-2D6DC305","1","MISMO_MARK","MK-2D6DC305"],["MK-BEBF5013","1","MISMO_MARK","MK-BEBF5013"]]},{"f":"HAR-HAB-026-2026-07-09","e":"HABILITADO","ent":"2026-07-13","m":[["MK-5341428A","7","MISMO_MARK","MK-5341428A"],["MK-5526B3B6","6","MISMO_MARK","MK-5526B3B6"],["MK-6526E844","28","MISMO_MARK","MK-6526E844"],["MK-7BD98810","7","MISMO_MARK","MK-7BD98810"],["MK-AC16BD53","14","MISMO_MARK","MK-AC16BD53"],["MK-E40364FD","14","MISMO_MARK","MK-E40364FD"]]},{"f":"HAR-HAB-027-2026-07-09","e":"HABILITADO","ent":"2026-07-13","m":[["MK-96835AFA","1","USAR_MARK_NUEVO","MK-0C25E1AF"],["MK-83439FF7","1","USAR_MARK_NUEVO","MK-343D1D1C"],["MK-3DF0F732","4","MISMO_MARK","MK-3DF0F732"],["SE-428PL6","1","USAR_MARK_NUEVO","MK-7B9CC2AC"],["MK-83AB763E","1","MISMO_MARK","MK-83AB763E"],["SE-436PL1","1","USAR_MARK_NUEVO","MK-AB03F386"],["MK-7337237C","2","USAR_MARK_NUEVO","MK-AB57B3B1"],["MK-9D6F8471","1","USAR_MARK_NUEVO","MK-AC77D2FF"],["MK-AE4755A7","1","MISMO_MARK","MK-AE4755A7"],["MK-B967453D","1","MISMO_MARK","MK-B967453D"],["MK-D4CAB971","1","MISMO_MARK","MK-D4CAB971"],["MK-3A869D1F","1","USAR_MARK_NUEVO","MK-DC57F264"],["SE-428PL7","1","USAR_MARK_NUEVO","MK-DD320524"]]},{"f":"HAR-HAB-028-2026-07-09","e":"HABILITADO","ent":"2026-07-13","m":[["MK-334A7686","14","MISMO_MARK","MK-334A7686"],["MK-6CA05227","14","MISMO_MARK","MK-6CA05227"],["MK-869C1B03","6","MISMO_MARK","MK-869C1B03"],["MK-8E8C69B7","42","MISMO_MARK","MK-8E8C69B7"],["MK-D2F1ED15","2","MISMO_MARK","MK-D2F1ED15"],["MK-D3346A94","14","MISMO_MARK","MK-D3346A94"],["MK-EAFC84D0","2","MISMO_MARK","MK-EAFC84D0"],["MK-FD570141","2","MISMO_MARK","MK-FD570141"]]},{"f":"HAR-HAB-030-2026-07-10","e":"HABILITADO","ent":"2026-07-13","m":[["MK-EFD60511","1","USAR_MARK_NUEVO","MK-0405E549"],["MK-3A2014B1","1","MISMO_MARK","MK-3A2014B1"],["MK-68701140","1","MISMO_MARK","MK-68701140"],["MK-957FF48D","4","USAR_MARK_NUEVO","MK-73ABBF68"],["MK-DA9EF290","1","USAR_MARK_NUEVO","MK-7B27674B"],["MK-8EF4F3A8","4","MISMO_MARK","MK-8EF4F3A8"],["MK-BABEE0E7","1","USAR_MARK_NUEVO","MK-A9248FD5"],["MK-70A7C374","1","USAR_MARK_NUEVO","MK-BAA52096"],["MK-D4F37683","1","MISMO_MARK","MK-D4F37683"],["MK-DE5E19CE","60","MISMO_MARK","MK-DE5E19CE"],["MK-FD1ED682","1","MISMO_MARK","MK-FD1ED682"]]},{"f":"HAR-HAB-031-2026-07-10","e":"HABILITADO","ent":"2026-07-13","m":[["MK-04133D4E","4","MISMO_MARK","MK-04133D4E"],["MK-498BD8C2","1","MISMO_MARK","MK-498BD8C2"],["MK-7192EF05","1","MISMO_MARK","MK-7192EF05"],["SE-443B1","1","USAR_MARK_NUEVO","MK-C78381CE"],["MK-04133D4E","1","USAR_MARK_NUEVO","MK-D381E9DA"]]},{"f":"HAR-HAB-032-2026-07-14","e":"HABILITADO","ent":"2026-07-21","m":[["MK-141780A8","7","MISMO_MARK","MK-141780A8"],["MK-8353398B","1","MISMO_MARK","MK-8353398B"],["MK-F6D6B122","1","MISMO_MARK","MK-F6D6B122"]]},{"f":"HAR-HAB-033-2026-07-15","e":"HABILITADO","ent":"2026-07-20","m":[["MK-0ED2682C","2","MISMO_MARK","MK-0ED2682C"],["MK-1186CBC5","1","MISMO_MARK","MK-1186CBC5"],["MK-7368737F","1","MISMO_MARK","MK-7368737F"],["MK-813C6B2A","1","MISMO_MARK","MK-813C6B2A"],["MK-8738E8B8","3","MISMO_MARK","MK-8738E8B8"],["MK-87D2355C","1","MISMO_MARK","MK-87D2355C"]]},{"f":"HAR-HAB-034-2026-07-15","e":"HABILITADO","ent":"2026-07-20","m":[["MK-CB718A94","1","MISMO_MARK","MK-CB718A94"]]},{"f":"HAR-HAB-035-2026-07-15","e":"HABILITADO","ent":"2026-07-20","m":[["MK-13811367","1","MISMO_MARK","MK-13811367"],["MK-1B359B8E","1","MISMO_MARK","MK-1B359B8E"],["MK-1EECB7C4","4","MISMO_MARK","MK-1EECB7C4"],["MK-1FA61EE8","1","MISMO_MARK","MK-1FA61EE8"],["MK-1FCD159D","1","MISMO_MARK","MK-1FCD159D"],["MK-2560CAE8","1","MISMO_MARK","MK-2560CAE8"],["MK-397B3846","1","MISMO_MARK","MK-397B3846"],["MK-3F87ADB3","1","MISMO_MARK","MK-3F87ADB3"],["MK-4B0FD6CD","1","MISMO_MARK","MK-4B0FD6CD"],["MK-4C5E418E","1","MISMO_MARK","MK-4C5E418E"],["MK-5B1D651D","1","MISMO_MARK","MK-5B1D651D"],["MK-6DB43475","2","MISMO_MARK","MK-6DB43475"],["MK-6FF0323E","1","MISMO_MARK","MK-6FF0323E"],["MK-86CB1ED5","1","MISMO_MARK","MK-86CB1ED5"],["MK-9DFFC63C","1","MISMO_MARK","MK-9DFFC63C"],["MK-AE462F52","1","MISMO_MARK","MK-AE462F52"],["MK-C3F0B818","1","MISMO_MARK","MK-C3F0B818"],["MK-CC750E42","1","MISMO_MARK","MK-CC750E42"],["MK-DF48A9C3","1","MISMO_MARK","MK-DF48A9C3"],["MK-F1993F33","1","MISMO_MARK","MK-F1993F33"]]},{"f":"HAR-HAB-036-2026-07-15","e":"HABILITADO","ent":"2026-07-20","m":[["MK-0AFBA339","1","MISMO_MARK","MK-0AFBA339"],["MK-183D00E0","1","MISMO_MARK","MK-183D00E0"],["MK-5EB5265F","1","MISMO_MARK","MK-5EB5265F"],["MK-8540152F","1","MISMO_MARK","MK-8540152F"],["MK-88A6AEA1","1","MISMO_MARK","MK-88A6AEA1"],["MK-97727AA7","1","MISMO_MARK","MK-97727AA7"],["MK-A0988F29","1","MISMO_MARK","MK-A0988F29"],["MK-A39D11B7","1","MISMO_MARK","MK-A39D11B7"],["MK-A718BA4D","2","MISMO_MARK","MK-A718BA4D"],["MK-AFFC6EB5","1","MISMO_MARK","MK-AFFC6EB5"],["MK-B79FB3F8","1","MISMO_MARK","MK-B79FB3F8"],["MK-C783AB61","1","MISMO_MARK","MK-C783AB61"],["MK-C9836092","1","MISMO_MARK","MK-C9836092"],["MK-CC018674","1","MISMO_MARK","MK-CC018674"],["MK-DF80FBBB","1","MISMO_MARK","MK-DF80FBBB"],["MK-EC638916","1","MISMO_MARK","MK-EC638916"],["MK-EFBFAD43","1","MISMO_MARK","MK-EFBFAD43"],["MK-FC8EC418","1","MISMO_MARK","MK-FC8EC418"],["MK-FF6D8694","1","MISMO_MARK","MK-FF6D8694"]]},{"f":"HAR-HAB-037-2026-07-15","e":"HABILITADO","ent":"2026-07-20","m":[["MK-82A09122","1","MISMO_MARK","MK-82A09122"],["MK-937F9715","1","MISMO_MARK","MK-937F9715"]]},{"f":"HAR-HAB-038-2026-07-15","e":"HABILITADO","ent":"2026-07-20","m":[["MK-3955634C","1","MISMO_MARK","MK-3955634C"],["MK-4825A12A","1","MISMO_MARK","MK-4825A12A"],["MK-5E019154","1","MISMO_MARK","MK-5E019154"],["MK-A73FF64E","1","MISMO_MARK","MK-A73FF64E"],["MK-B756BF21","1","MISMO_MARK","MK-B756BF21"]]},{"f":"HAR-HAB-041-2026-07-15","e":"HABILITADO","ent":"2026-07-20","m":[["MK-0CC01E5F","2","MISMO_MARK","MK-0CC01E5F"],["MK-71FA8797","1","MISMO_MARK","MK-71FA8797"],["MK-C1F234EE","1","MISMO_MARK","MK-C1F234EE"],["MK-C58518DA","1","MISMO_MARK","MK-C58518DA"]]},{"f":"HAR-HAB-042-2026-07-15","e":"HABILITADO","ent":"2026-07-20","m":[["MK-1778332D","35","MISMO_MARK","MK-1778332D"],["MK-A933661A","35","MISMO_MARK","MK-A933661A"]]},{"f":"HAR-HAB-044-2026-07-16","e":"HABILITADO","ent":"2026-07-20","m":[["MK-A3E43D42","2","MISMO_MARK","MK-A3E43D42"],["MK-E7322C53","4","MISMO_MARK","MK-E7322C53"]]},{"f":"HAR-HAB-045-2026-07-16","e":"HABILITADO","ent":"2026-07-20","m":[["MK-A8D18BBE","1","MISMO_MARK","MK-A8D18BBE"],["MK-B8B3DB50","1","MISMO_MARK","MK-B8B3DB50"]]},{"f":"HAR-HAB-046-2026-07-16","e":"HABILITADO","ent":"2026-07-20","m":[["MK-35144922","2","MISMO_MARK","MK-35144922"],["MK-4F857660","1","MISMO_MARK","MK-4F857660"],["MK-9E04D25D","2","MISMO_MARK","MK-9E04D25D"],["MK-A4B890BB","2","MISMO_MARK","MK-A4B890BB"],["MK-DBECD2BE","2","MISMO_MARK","MK-DBECD2BE"],["MK-EA8C8C37","1","MISMO_MARK","MK-EA8C8C37"]]},{"f":"HAR-HAB-047-2026-07-16","e":"HABILITADO","ent":"2026-07-20","m":[["MK-D1A207B1","10","MISMO_MARK","MK-D1A207B1"]]},{"f":"HAR-HAB-048-2026-07-16","e":"HABILITADO","ent":"2026-07-20","m":[["MK-B1AB93ED","2","MISMO_MARK","MK-B1AB93ED"]]},{"f":"HAR-HAB-049-2026-07-16","e":"HABILITADO","ent":"2026-07-20","m":[["MK-00AF6A9D","1","MISMO_MARK","MK-00AF6A9D"],["MK-52F2118E","2","MISMO_MARK","MK-52F2118E"],["MK-5AEB6C14","2","MISMO_MARK","MK-5AEB6C14"],["MK-A1C9B45E","4","MISMO_MARK","MK-A1C9B45E"],["MK-A5B3E006","1","MISMO_MARK","MK-A5B3E006"],["MK-C1774F99","1","MISMO_MARK","MK-C1774F99"]]},{"f":"HAR-HAB-050-2026-07-16","e":"HABILITADO","ent":"2026-07-20","m":[["MK-AEB57ECB","2","MISMO_MARK","MK-AEB57ECB"]]},{"f":"HAR-HAB-051-2026-07-16","e":"HABILITADO","ent":"2026-07-20","m":[["MK-A7ED05AC","1","VERIFICAR","MK-A7ED05AC"]]},{"f":"HAR-HAB-052-2026-07-16","e":"HABILITADO","ent":"2026-07-20","m":[["MK-0BB3603B","1","MISMO_MARK","MK-0BB3603B"],["MK-241FB69B","4","MISMO_MARK","MK-241FB69B"],["MK-46B3C786","1","MISMO_MARK","MK-46B3C786"],["MK-71CF1A06","1","MISMO_MARK","MK-71CF1A06"],["MK-7C247548","10","MISMO_MARK","MK-7C247548"],["MK-8DD9E201","1","MISMO_MARK","MK-8DD9E201"],["MK-9B0EF148","3","MISMO_MARK","MK-9B0EF148"],["MK-B094ECDC","1","MISMO_MARK","MK-B094ECDC"]]},{"f":"HAR-HAB-053-2026-07-16","e":"HABILITADO","ent":"2026-07-20","m":[["MK-911D83C0","2","MISMO_MARK","MK-911D83C0"],["MK-D0EDEBE7","3","MISMO_MARK","MK-D0EDEBE7"]]},{"f":"HAR-HAB-054-2026-07-16","e":"HABILITADO","ent":"2026-07-20","m":[["MK-968C46A4","1","MISMO_MARK","MK-968C46A4"]]},{"f":"HAR-HAB-055-2026-07-16","e":"HABILITADO","ent":"2026-07-20","m":[["MK-05692630","1","MISMO_MARK","MK-05692630"]]},{"f":"HAR-HAB-056-2026-07-16","e":"HABILITADO","ent":"2026-07-20","m":[["MK-01B320A9","1","MISMO_MARK","MK-01B320A9"]]},{"f":"HAR-HAB-057-2026-07-16","e":"HABILITADO","ent":"2026-07-20","m":[["MK-E9C7EC4B","10","MISMO_MARK","MK-E9C7EC4B"]]},{"f":"HAR-HAB-058-2026-07-16","e":"HABILITADO","ent":"2026-07-20","m":[["MK-ABCD1EC3","20","MISMO_MARK","MK-ABCD1EC3"]]},{"f":"HAR-HAB-059-2026-07-16","e":"HABILITADO","ent":"2026-07-20","m":[["MK-0173DA5A","7","MISMO_MARK","MK-0173DA5A"],["MK-142DD96E","7","MISMO_MARK","MK-142DD96E"],["MK-1C9E8BDD","7","MISMO_MARK","MK-1C9E8BDD"],["MK-1CA920C1","7","MISMO_MARK","MK-1CA920C1"],["MK-343569E8","7","MISMO_MARK","MK-343569E8"],["MK-D1F918EB","1","USAR_MARK_NUEVO","MK-454E4B2A"],["MK-E5D9C331","7","USAR_MARK_NUEVO","MK-50F5F131"],["MK-5196E3B3","1","MISMO_MARK","MK-5196E3B3"],["MK-7C3E59D9","7","MISMO_MARK","MK-7C3E59D9"],["MK-89993579","1","MISMO_MARK","MK-89993579"],["MK-90438647","7","MISMO_MARK","MK-90438647"],["MK-A27179D0","7","MISMO_MARK","MK-A27179D0"],["MK-B01186C2","7","MISMO_MARK","MK-B01186C2"],["MK-B1E841DF","1","MISMO_MARK","MK-B1E841DF"],["MK-B968C157","7","MISMO_MARK","MK-B968C157"],["MK-BF73B12A","14","MISMO_MARK","MK-BF73B12A"],["MK-D1F918EB","19","MISMO_MARK","MK-D1F918EB"],["MK-ED129882","7","MISMO_MARK","MK-ED129882"],["MK-F6A57A49","7","MISMO_MARK","MK-F6A57A49"],["MK-F8FA9BB1","7","MISMO_MARK","MK-F8FA9BB1"],["MK-FA89FC8F","7","MISMO_MARK","MK-FA89FC8F"]]},{"f":"HAR-HAB-060-2026-07-16","e":"HABILITADO","ent":"2026-07-20","m":[["MK-29F0C6E4","7","MISMO_MARK","MK-29F0C6E4"],["MK-DD8DCF16","1","USAR_MARK_NUEVO","MK-33252CCD"],["MK-6D4D821B","1","USAR_MARK_NUEVO","MK-439C14D0"],["MK-45B59628","7","MISMO_MARK","MK-45B59628"],["MK-6D4D821B","20","MISMO_MARK","MK-6D4D821B"],["MK-8A565C15","7","MISMO_MARK","MK-8A565C15"],["MK-DD8DCF16","41","MISMO_MARK","MK-DD8DCF16"],["MK-EC41B0FF","14","MISMO_MARK","MK-EC41B0FF"]]},{"f":"HAR-HAB-061-2026-07-16","e":"HABILITADO","ent":"2026-07-20","m":[["MK-14AA831E","7","MISMO_MARK","MK-14AA831E"],["MK-6BE5F3CB","7","MISMO_MARK","MK-6BE5F3CB"],["MK-6F9CCBF1","7","MISMO_MARK","MK-6F9CCBF1"],["MK-9C3434F7","7","MISMO_MARK","MK-9C3434F7"],["MK-AE444F5F","7","MISMO_MARK","MK-AE444F5F"]]},{"f":"HAR-HAB-062-2026-07-16","e":"HABILITADO","ent":"2026-07-20","m":[["MK-06C67973","7","MISMO_MARK","MK-06C67973"],["MK-1043D797","7","MISMO_MARK","MK-1043D797"],["MK-255FF01C","7","MISMO_MARK","MK-255FF01C"],["MK-2B452D1D","7","MISMO_MARK","MK-2B452D1D"],["MK-37B680E3","7","MISMO_MARK","MK-37B680E3"],["MK-3CA4F8BE","7","MISMO_MARK","MK-3CA4F8BE"],["MK-4F4C955A","7","MISMO_MARK","MK-4F4C955A"],["MK-646B10C6","7","MISMO_MARK","MK-646B10C6"],["MK-67B54446","1","MISMO_MARK","MK-67B54446"],["MK-71FE35AA","7","MISMO_MARK","MK-71FE35AA"],["MK-7697A640","7","MISMO_MARK","MK-7697A640"],["MK-90044FA8","7","MISMO_MARK","MK-90044FA8"],["MK-9857971F","7","MISMO_MARK","MK-9857971F"],["MK-AAF147D2","7","MISMO_MARK","MK-AAF147D2"],["MK-B8B34341","7","MISMO_MARK","MK-B8B34341"],["MK-C654AB2E","7","MISMO_MARK","MK-C654AB2E"],["MK-C6DFC9AE","14","MISMO_MARK","MK-C6DFC9AE"],["MK-D21C257F","7","MISMO_MARK","MK-D21C257F"],["MK-E4C65ED5","7","MISMO_MARK","MK-E4C65ED5"],["MK-EB298C15","7","MISMO_MARK","MK-EB298C15"],["MK-F57A2949","7","MISMO_MARK","MK-F57A2949"]]},{"f":"HAR-HAB-063-2026-07-16","e":"HABILITADO","ent":"2026-07-20","m":[["MK-4EA2790C","1","VERIFICAR","MK-4EA2790C"],["MK-B1CB3DC7","1","VERIFICAR","MK-B1CB3DC7"]]},{"f":"HAR-HAB-064-2026-07-16","e":"HABILITADO","ent":"2026-07-20","m":[["MK-9E350713","7","MISMO_MARK","MK-9E350713"]]},{"f":"HAR-HAB-065-2026-07-16","e":"HABILITADO","ent":"2026-07-20","m":[["MK-92C6DF60","7","MISMO_MARK","MK-92C6DF60"]]}];
-
-function toggleRegenLista(){
-  const l=document.getElementById('regen-lista'), c=document.getElementById('regen-caret');
-  if(!l) return; const show=l.style.display==='none'; l.style.display=show?'block':'none'; if(c) c.textContent=show?'▲':'▼';
-}
-function renderRegenPanel(){
-  const panel=document.getElementById('regen-panel'); if(!panel) return;
-  if(typeof REGEN_DATA==='undefined' || !REGEN_DATA.length){ panel.style.display='none'; return; }
-  panel.style.display='block';
-  const cnt=document.getElementById('regen-count'); if(cnt) cnt.textContent=REGEN_DATA.length;
-  const lista=document.getElementById('regen-lista'); if(!lista) return;
-  lista.innerHTML = REGEN_DATA.map(function(o,i){
-    const nuevo=o.m.filter(function(m){return m[2]==='USAR_MARK_NUEVO';}).length;
-    const verif=o.m.filter(function(m){return m[2]==='VERIFICAR';}).length;
-    let b='';
-    if(nuevo) b+=' <span style="color:#0a7;font-weight:700">'+nuevo+' nueva</span>';
-    if(verif) b+=' <span style="color:#c00;font-weight:700">'+verif+' verificar</span>';
-    return '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 2px;border-bottom:1px solid #eee5c8;font-size:13px">'
-      + '<span>'+o.f+' · '+o.e+' · '+o.m.length+' marcas'+b+'</span>'
-      + '<button type="button" style="background:#b8860b;color:#fff;border:0;border-radius:6px;padding:5px 12px;font-size:12px;cursor:pointer;flex:0 0 auto" onclick="regenerarOT('+i+')">Cargar</button>'
-      + '</div>';
-  }).join('');
-}
-async function _regenEsperar(cond, ms){
-  const t0=Date.now();
-  while(!cond() && (Date.now()-t0) < (ms||8000)){ await new Promise(function(r){ setTimeout(r,120); }); }
-  return cond();
-}
-async function regenerarOT(i){
-  const ot=REGEN_DATA[i]; if(!ot) return;
-  const av=document.getElementById('regen-aviso'); if(av){ av.style.display='none'; }
-  const selP=document.getElementById('proyecto');
-  await _regenEsperar(function(){ return Array.prototype.some.call(selP.options, function(o){ return o.value==='HARRISON-OWOW'; }); }, 8000);
-  selP.value='HARRISON-OWOW';
-  onProyectoChange();
-  await _regenEsperar(function(){ return Array.isArray(_itemsCache) && _itemsCache.length>0; }, 12000);
-  if(typeof _composicionPromise!=='undefined' && _composicionPromise){ try{ await _composicionPromise; }catch(e){} }
-  const selE=document.getElementById('etapa');
-  await _regenEsperar(function(){ return Array.prototype.some.call(selE.options, function(o){ return o.value===ot.e; }); }, 5000);
-  selE.value=ot.e;
-  onEtapaChange();
-  const d=new Date();
-  const iso=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
-  const fEl=document.getElementById('fecha'); if(fEl) fEl.value=iso;
-  if(ot.ent){ const eEl=document.getElementById('entrega'); if(eEl) eEl.value=ot.ent; }
-  const ta=document.getElementById('titulo-actividad'); if(ta) ta.value='Regenerada de '+ot.f+' (planos REV0)';
-  const faltan=[], verif=[];
-  for(let k=0;k<ot.m.length;k++){
-    const mark=ot.m[k][0], accion=ot.m[k][2];
-    if(accion==='VERIFICAR'){ verif.push(ot.m[k][3]); continue; }
-    const idx=_itemsCache.findIndex(function(it){ return it.mark===mark; });
-    if(idx<0){ faltan.push(mark); continue; }
-    await agregarItem(idx);
-  }
-  let msg='✔ Precargado de <b>'+ot.f+'</b>: '+ot.m.length+' marca(s). Revisa las cantidades, escribe el <b>Responsable</b>, firma y crea → la OT queda en <b>por aprobar</b>.';
-  if(verif.length) msg+='<br>⚠️ <b>VERIFICAR con ingeniería</b> (no se agregaron, mapear a mano): '+verif.join(', ')+'.';
-  if(faltan.length) msg+='<br>⚠️ No encontradas en el catálogo: '+faltan.join(', ')+'.';
-  if(av){ av.innerHTML=msg; av.style.display='block'; }
-  const lst=document.getElementById('regen-lista'); if(lst) lst.style.display='none';
-  const car=document.getElementById('regen-caret'); if(car) car.textContent='▼';
-  if(ta && ta.scrollIntoView){ ta.scrollIntoView({behavior:'smooth', block:'center'}); }
-}
-if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', renderRegenPanel);
-else renderRegenPanel();
-// =================== FIN REGENERAR (temporal) ===================
 
 // v2.38: chequeo temprano de duplicado al agregar una marca al lote (antes solo se avisaba
 // al presionar "Crear OT", tras llenar todo). Reusa prechequeoMarks (cero backend nuevo).
