@@ -4,7 +4,19 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>CAMI — Orden de Trabajo</title>
-<!-- v2.40 (2026-07-17): RETIRADO el panel Regenerar de v2.39. El prefill no servía: los marks del
+<!-- v2.41 (2026-07-18): AVANCE POR MARK en el modal de cierre (pareja del backend v2.39.0).
+     La OT agrupa piezas por perfil (en taller se cortan juntas), pero se terminan en momentos
+     distintos. Antes el cierre era todo-o-nada: los marks terminados no se veían en la sábana
+     hasta que la OT entera cerraba — avance inexacto. Ahora el modal de cierre trae una sección
+     "Avance de piezas": checklist de los marks del lote (con estado y quién los cerró), botón
+     "Seleccionar todos", y "Registrar avance" que llama al endpoint avanceMarks SIN firma.
+     El cierre formal con firma sigue abajo y el backend lo RECHAZA si faltan marks (gate 100%),
+     devolviendo la lista de pendientes. También hay "Reabrir…" para revertir un mark marcado
+     por error. Los marks del lote se leen del GET público listaLoteMarks y los labels de
+     listaItemsPorProyecto (cacheado por proyecto).
+     Pendiente (siguiente): formulario de avance por LISTA cross-OT con chips y preview.
+     ── v2.40 ──
+     v2.40 (2026-07-17): RETIRADO el panel Regenerar de v2.39. El prefill no servía: los marks del
      OT_LOTE_MARKS histórico ya no cuadran tras la migración de catálogo (marcas archivadas/relabeladas),
      así que las OTs canceladas se rehacen a mano. Se quitó el panel #regen-panel + el bloque REGEN_DATA
      para no dejar una herramienta engañosa en producción. El flujo de crear OT queda idéntico a v2.38.
@@ -3103,6 +3115,13 @@ async function abrirCerrarModal(idx) {
     <div class="section-title" style="margin-bottom:8px">Materiales / BOM</div>
     ${matsHtml}
 
+    <!-- v2.39: avance por mark. La OT agrupa piezas por perfil, pero se terminan
+         en momentos distintos. Aqui se registran las que YA estan hechas (sin
+         firma); el cierre formal de abajo exige el 100%. -->
+    <div class="section-title" style="margin-top:16px;margin-bottom:8px">Avance de piezas (marks del lote)</div>
+    <p style="font-size:11px;color:#4A4A48">Marca las piezas terminadas y registra el avance. No requiere firma. El cierre de abajo se habilita cuando esten todas.</p>
+    <div id="avance-marks-box"><div style="font-size:11px;color:#888780">Cargando marks del lote...</div></div>
+
     <div class="section-title" style="margin-top:16px;margin-bottom:8px">Checklist de Calidad</div>
     <p style="font-size:11px;color:#4A4A48">Marca los checks que cumplen. Sin marcar = no cumple.</p>
     <div id="checklist-cerrar">${checklistHtml}</div>
@@ -3125,7 +3144,123 @@ async function abrirCerrarModal(idx) {
     </div>
   `;
   setTimeout(() => initFirmaCanvas('firma-cerrar-canvas'), 50);
+  renderAvancePanel(ot);   // v2.39: carga async los marks del lote
 }
+
+/* ── v2.39: AVANCE POR MARK dentro del modal de cierre ──────────────
+   La OT es un documento agrupado por perfil, pero el avance es por pieza.
+   Aqui el supervisor marca las que ya estan hechas y registra el avance SIN
+   firma; el cierre formal (con firma) exige el 100%. El backend valida todo
+   de nuevo — esto es solo la UI. */
+let _loteMarksCache  = {};   // folio -> marks del lote (del GET publico)
+let _labelsPorProy   = {};   // proyecto -> { MK-id: label }
+
+async function _cargarLabelsProyecto(proyecto) {
+  if (_labelsPorProy[proyecto]) return _labelsPorProy[proyecto];
+  const mapa = {};
+  try {
+    const r = await fetch(SCRIPT_URL + '?accion=listaItemsPorProyecto&proyecto=' + encodeURIComponent(proyecto));
+    const d = await r.json();
+    if (d && d.ok) (d.items || []).forEach(it => { if (it.mark) mapa[it.mark] = it.label || it.mark; });
+  } catch (e) { /* sin labels: se muestran los MK-id crudos */ }
+  _labelsPorProy[proyecto] = mapa;
+  return mapa;
+}
+
+async function renderAvancePanel(ot) {
+  const box = document.getElementById('avance-marks-box');
+  if (!box) return;
+  try {
+    const [r, labels] = await Promise.all([
+      fetch(SCRIPT_URL + '?accion=listaLoteMarks&proyecto=' + encodeURIComponent(ot.proyecto)).then(x => x.json()),
+      _cargarLabelsProyecto(ot.proyecto)
+    ]);
+    const marks = ((r && r.marks) || []).filter(m => m.folio === ot.folio);
+    _loteMarksCache[ot.folio] = marks;
+    if (!marks.length) {
+      box.innerHTML = '<p style="font-size:11px;color:#888780">Esta OT no tiene marks de lote registrados (OT anterior a v2.8).</p>';
+      return;
+    }
+    const cerrados = marks.filter(m => m.estado_lote === 'CERRADO').length;
+    const filas = marks.map(m => {
+      const cerrado = m.estado_lote === 'CERRADO';
+      const lbl = labels[m.mark] || m.mark;
+      return `<label style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-bottom:1px solid #f0eee8;font-size:12px">
+        <input type="checkbox" data-avmark="${escapeAttr(m.mark)}" ${cerrado ? 'checked disabled' : ''}>
+        <span style="flex:1"><b>${escapeHtml(lbl)}</b> <span style="color:#888780">×${m.qty}</span></span>
+        ${cerrado ? `<span style="color:#3B6D11;font-size:11px">✓ ${escapeHtml(m.cerrado_por || '')}</span>` : '<span style="color:#8B6914;font-size:11px">pendiente</span>'}
+      </label>`;
+    }).join('');
+    const todas = cerrados === marks.length;
+    box.innerHTML = `
+      <div style="border:1px solid #d3d1c7;border-radius:6px;overflow:hidden">
+        <div style="display:flex;gap:8px;align-items:center;padding:8px;background:#f7f6f2;font-size:11px">
+          <button type="button" class="btn-secondary" style="padding:4px 8px;font-size:11px" onclick="avMarcarTodos()">Seleccionar todos</button>
+          <span style="flex:1;color:#4A4A48"><b>${cerrados}/${marks.length}</b> terminados</span>
+          ${todas ? '<span style="color:#3B6D11;font-weight:700">100% — listo para cerrar</span>' : ''}
+        </div>
+        ${filas}
+        <div style="display:flex;gap:8px;padding:8px;background:#f7f6f2">
+          <button type="button" class="btn-success" style="flex:1;padding:8px;font-size:12px" onclick="registrarAvance('cerrar')">Registrar avance</button>
+          ${cerrados ? '<button type="button" class="btn-secondary" style="padding:8px;font-size:12px" onclick="registrarAvance(\'reabrir\')">Reabrir…</button>' : ''}
+        </div>
+      </div>`;
+  } catch (e) {
+    box.innerHTML = '<p style="font-size:11px;color:#A32D2D">No se pudieron cargar los marks: ' + escapeHtml(e.message) + '</p>';
+  }
+}
+
+function avMarcarTodos() {
+  document.querySelectorAll('#avance-marks-box [data-avmark]:not(:disabled)').forEach(c => { c.checked = true; });
+}
+
+// modo 'cerrar'  -> marca terminados los seleccionados (no deshabilitados).
+// modo 'reabrir' -> revierte los YA cerrados (pide confirmacion y cuales).
+async function registrarAvance(modo) {
+  if (!_otEnCierre) return;
+  const ot = _otEnCierre;
+  const token = getToken(); if (!token) { abrirReloginModal(); return; }
+  let seleccion;
+  if (modo === 'reabrir') {
+    const cerrados = (_loteMarksCache[ot.folio] || []).filter(m => m.estado_lote === 'CERRADO');
+    if (!cerrados.length) return;
+    const labels = _labelsPorProy[ot.proyecto] || {};
+    const txt = prompt('Escribe el mark a REABRIR (uno por linea o separados por coma):\n\n' +
+                       cerrados.map(m => labels[m.mark] || m.mark).join(', '));
+    if (!txt) return;
+    seleccion = txt.split(/[\s,;]+/).map(s => s.trim()).filter(Boolean);
+  } else {
+    seleccion = [...document.querySelectorAll('#avance-marks-box [data-avmark]:not(:disabled)')]
+      .filter(c => c.checked).map(c => c.dataset.avmark);
+    if (!seleccion.length) { alert('Selecciona al menos una pieza terminada.'); return; }
+  }
+  try {
+    const r = await fetch(SCRIPT_URL, {
+      method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({
+        action: 'avanceMarks', token: token, proyecto: ot.proyecto, etapa: ot.etapa,
+        modo: modo, dryRun: false, marks: seleccion
+      })
+    });
+    const d = await r.json();
+    if (!d.ok) {
+      if (/sesion/i.test(d.error || '')) { abrirReloginModal(); return; }
+      alert('Error: ' + (d.error || 'desconocido'));
+      return;
+    }
+    const p = d.preview || {};
+    let msg = d.aplicados + ' pieza(s) ' + (modo === 'reabrir' ? 'reabiertas' : 'registradas como terminadas') + '.';
+    if ((p.noEncontrados || []).length) msg += '\nSin OT activa: ' + p.noEncontrados.map(x => x.label).join(', ');
+    if ((p.ambiguos || []).length)      msg += '\nAmbiguos (en varias OTs): ' + p.ambiguos.map(x => x.label).join(', ');
+    if ((p.yaEnEstado || []).length)    msg += '\nYa estaban asi: ' + p.yaEnEstado.length;
+    if ((d.otsAl100 || []).indexOf(ot.folio) !== -1) msg += '\n\n✓ Esta OT quedo al 100% — ya puedes firmar el cierre.';
+    alert(msg);
+    await renderAvancePanel(ot);   // refrescar el panel con el estado nuevo
+  } catch (e) {
+    alert('Error: ' + e.message);
+  }
+}
+
 function cerrarCerrarModal() {
   document.getElementById('cerrar-modal').classList.remove('show');
   _otEnCierre = null; _firmaCanvas = null;
