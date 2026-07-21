@@ -1,5 +1,5 @@
 // ================================================================
-// CAMI - Apps Script ORDENES DE TRABAJO v2.38.0  (endpoint listaMarkMerge · roll-up de sábana tras migración de planos REV0)
+// CAMI - Apps Script ORDENES DE TRABAJO v2.39.0  (cierre parcial de OT: avance por mark + gate 100% en el cierre formal)
 // Bound al Sheet de OT (CAMI_OT_DB) - ID 12WU13Qp2DPXjaqAMuXg-yYYizuKqMU1K04v0nw0Ud7o
 //
 // REDISENIO COMPLETO vs v1.3:
@@ -48,7 +48,27 @@
 // Folder Drive Firmas:  (subcarpeta automatica dentro del folder de OT)
 // ================================================================
 
-const MODULE_VERSION = '2.38.0';
+const MODULE_VERSION = '2.39.0';
+// v2.39.0 (2026-07-18): CIERRE PARCIAL DE OT — separa el AVANCE del CIERRE FORMAL.
+//   Problema: la OT es un DOCUMENTO agrupado por perfil (en taller se cortan juntos
+//   todos los L6X3-1/2X3/8), pero el AVANCE es por pieza. Amarrar el cierre al
+//   documento hacía el avance inexacto: los marks terminados no se veían en la
+//   sábana hasta que la OT entera cerraba. El modelo YA era por-mark
+//   (OT_LOTE_MARKS.estado_lote por fila) y cami-procesos YA leía por mark, así que
+//   esto sólo EXPONE esa capacidad: sin cambio de esquema y sin tocar cami-procesos.
+//   - avanceMarks (NUEVO): cierra/reabre un SUBCONJUNTO de marks, sin firma, con
+//     dryRun para preview. Sólo OTs EN_PROCESO (APROBADA no: el taller aún no la
+//     recibió). Scope por etapa. Un mark en varias OTs vivas => 'ambiguo', lo
+//     resuelve el usuario (no se adivina). Idempotente: re-enviar no rompe.
+//     Acepta label ('404A5') o MK-id — el form por lista manda labels, el panel
+//     por OT manda MK-ids. Canonicaliza marks viejos con CAT_MARK_MERGE (REV0).
+//   - _resolverAvanceMarks: función PURA con _testResolverAvanceMarks() ejecutable
+//     desde el editor (mismo patrón que _testQuincenaParaFecha de cami-nomina).
+//   - handleCerrarOT: ahora EXIGE 100% de marks cerrados y sólo ESTAMPA la OT.
+//     Antes cerraba todos los marks de un jalón — eso hacía la firma inexacta.
+//     El gate va ANTES de guardar firma/cabecera: un cierre rechazado no deja efecto.
+//   - REGLA ESCRITA: si se cancela/rechaza una OT con marks ya cerrados, el avance
+//     SE CONSERVA (la pieza física existe; cancelar el documento no la des-fabrica).
 // v2.38.0 (2026-07-14): endpoint GET público listaMarkMerge — lee la hoja CAT_MARK_MERGE
 //                    (old_canon → new_canon) que crea la migración de planos OWOW. La sábana de
 //                    cami-procesos lo consume para canonicalizar marcas viejas (fusionadas/relabeladas)
@@ -455,6 +475,7 @@ function doPost(e) {
     if (accion === 'rechazarOT')           return handleRechazarOT(data);
     if (accion === 'listarPorCerrar')      return handleListarPorCerrar(data);
     if (accion === 'cerrarOT')             return handleCerrarOT(data);
+    if (accion === 'avanceMarks')          return handleAvanceMarks(data);   // v2.39 cierre parcial
     return jsonResp({ ok: false, error: 'Accion desconocida: ' + accion });
   } catch (err) {
     return jsonResp({ ok: false, error: err.message });
@@ -2098,6 +2119,31 @@ function handleCerrarOT(data) {
       return jsonResp({ ok: false, error: 'Esta OT no se puede cerrar (estado ' + ubicado.estado + '). Debe estar en EN_PROCESO — pasar antes por Aprobar/Recibir para firmar la recepcion.' });
     }
 
+    // v2.39 GATE DE 100%: el cierre formal EXIGE que todos los marks del lote ya
+    // esten CERRADO. Antes esta misma llamada cerraba los marks de un jalon, lo que
+    // hacia la firma inexacta (declaraba terminado lo que nadie reviso pieza por
+    // pieza). Ahora el avance se registra con handleAvanceMarks y aqui solo se
+    // estampa. Va ANTES de guardar la firma y de tocar la cabecera para que un
+    // cierre rechazado no deje NINGUN efecto.
+    const shLote = ss.getSheetByName(H_LOTE_MARKS);
+    if (shLote) {
+      const rowsLote = shLote.getDataRange().getValues();
+      const pendientes = [];
+      for (let i = 1; i < rowsLote.length; i++) {
+        if (String(rowsLote[i][1] || '').trim() !== folio) continue;
+        if (String(rowsLote[i][6] || '').trim().toUpperCase() !== 'CERRADO') {
+          pendientes.push(String(rowsLote[i][3] || '').trim());
+        }
+      }
+      if (pendientes.length) {
+        return jsonResp({
+          ok: false,
+          error: 'Faltan ' + pendientes.length + ' mark(s) por registrar como terminados. Registra el avance antes de firmar el cierre.',
+          pendientes: pendientes
+        });
+      }
+    }
+
     // 1. Guardar firma de cierre
     const idFirma = guardarFirma(ss, folio, 'CIERRE', auth.usuario.nombre, firmaB64);
 
@@ -2133,20 +2179,8 @@ function handleCerrarOT(data) {
       shOT.getRange(ubicado.fila, 10).setValue(nuevoObs);
     }
 
-    // 4. Cerrar marks del lote (v2.8 Fase 1)
-    const shLote = ss.getSheetByName(H_LOTE_MARKS);
-    if (shLote) {
-      const rowsLote = shLote.getDataRange().getValues();
-      const ahora = new Date();
-      for (let i = 1; i < rowsLote.length; i++) {
-        if (String(rowsLote[i][1] || '').trim() === folio &&
-            String(rowsLote[i][6] || '').trim().toUpperCase() === 'CREADO') {
-          shLote.getRange(i + 1, 7).setValue('CERRADO');             // col 7 estado_lote
-          shLote.getRange(i + 1, 8).setValue(auth.usuario.nombre);   // col 8 cerrado_por
-          shLote.getRange(i + 1, 9).setValue(ahora);                 // col 9 fecha_cierre
-        }
-      }
-    }
+    // 4. v2.39: los marks YA vienen cerrados (gate arriba). El cierre formal solo
+    // ESTAMPA la OT — el avance por mark vive en handleAvanceMarks (sin firma).
 
     appendLog(ss, folio, 'COMPLETADA', auth.usuario.nombre, idFirma);
 
@@ -2156,6 +2190,284 @@ function handleCerrarOT(data) {
   } finally {
     lock.releaseLock();
   }
+}
+
+// ── avanceMarks (v2.39) — cierra/reabre un SUBCONJUNTO de marks ────
+// Separa el AVANCE de produccion (por mark, sin firma, masivo) del CIERRE
+// FORMAL de la OT (por OT, con firma, una sola vez al 100%).
+//
+// Por que existe: la OT es un DOCUMENTO agrupado por perfil (en taller cortas
+// todos los L6X3-1/2X3/8 juntos), pero el AVANCE es por pieza. Amarrar el cierre
+// al documento hacia el avance inexacto — marks terminados no se veian hasta que
+// la OT entera cerraba. El modelo ya era por-mark (OT_LOTE_MARKS.estado_lote por
+// fila) y cami-procesos ya leia por mark: esto solo expone esa capacidad.
+//
+// dryRun=true devuelve SOLO el preview (no escribe). El motor de resolucion es el
+// MISMO para preview y ejecucion, para que no se desincronicen.
+function handleAvanceMarks(data) {
+  const auth = autenticarConApp(data.token, APP_KEY_CERRAR);
+  if (!auth.ok) return jsonResp(auth);
+
+  const proyecto = String(data.proyecto || '').trim();
+  const etapa    = String(data.etapa || '').trim();
+  const modo     = (String(data.modo || 'cerrar').trim().toLowerCase() === 'reabrir') ? 'reabrir' : 'cerrar';
+  const dryRun   = !!data.dryRun;
+  const marks    = Array.isArray(data.marks) ? data.marks : [];
+  if (!proyecto)     return jsonResp({ ok: false, error: 'proyecto requerido' });
+  if (!etapa)        return jsonResp({ ok: false, error: 'etapa requerida' });
+  if (!marks.length) return jsonResp({ ok: false, error: 'lista de marks vacia' });
+
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(15000)) return jsonResp({ ok: false, error: 'Sistema ocupado, intenta de nuevo' });
+
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const shLote = ss.getSheetByName(H_LOTE_MARKS);
+    if (!shLote) return jsonResp({ ok: false, error: 'Hoja OT_LOTE_MARKS no encontrada' });
+    const loteRows = shLote.getDataRange().getValues();
+
+    // Estado + etapa por folio desde la cabecera OT.
+    const otEstadoPorFolio = {}, otEtapaPorFolio = {};
+    const shOT = ss.getSheetByName(H_OT);
+    if (shOT) {
+      const ot = shOT.getDataRange().getValues();
+      for (let i = 1; i < ot.length; i++) {
+        const f = String(ot[i][0] || '').trim();
+        if (!f) continue;
+        otEtapaPorFolio[f]  = String(ot[i][3]  || '').trim();   // col D etapa
+        otEstadoPorFolio[f] = String(ot[i][10] || '').trim();   // col K estado
+      }
+    }
+
+    // Indice de resolucion desde CAT_ITEMS (del proyecto, activos).
+    // Se indexa por label Y por mark canonico: el formulario por lista manda
+    // labels ('404A5') y el panel por OT manda MK-ids.
+    const labelToMark = {};
+    const shItems = ss.getSheetByName(H_ITEMS);
+    if (shItems) {
+      const it = shItems.getDataRange().getValues();
+      for (let i = 1; i < it.length; i++) {
+        if (String(it[i][0] || '').trim() !== proyecto) continue;            // col 0 proyecto
+        if (String(it[i][9] || '').trim().toUpperCase() !== 'SI') continue;  // col 9 activo
+        const mk = String(it[i][1] || '').trim();                            // col 1 mark
+        const lb = String(it[i][2] || '').trim();                            // col 2 label
+        if (!mk) continue;
+        if (lb) labelToMark[lb] = mk;
+        labelToMark[mk] = mk;                                                // identidad por MK-id
+      }
+    }
+
+    // mergeMap REV0 (old_canon -> new_canon). Hoja opcional.
+    const mergeMap = {};
+    const shMerge = ss.getSheetByName('CAT_MARK_MERGE');
+    if (shMerge) {
+      const mg = shMerge.getDataRange().getValues();
+      for (let i = 1; i < mg.length; i++) {
+        const o = String(mg[i][0] || '').trim(), n = String(mg[i][1] || '').trim();
+        if (o && n) mergeMap[o] = n;
+      }
+    }
+
+    const res = _resolverAvanceMarks(marks, modo, {
+      loteRows: loteRows,
+      otEstadoPorFolio: otEstadoPorFolio,
+      otEtapaPorFolio: otEtapaPorFolio,
+      etapa: etapa,
+      labelToMark: labelToMark,
+      mergeMap: mergeMap
+    });
+
+    if (dryRun) {
+      return jsonResp({ ok: true, dryRun: true, preview: res, aplicados: 0, otsAl100: [] });
+    }
+
+    // Ejecutar: escribir SOLO las filas accionables.
+    const objetivo = (modo === 'reabrir') ? res.reabrir : res.cerrar;
+    const ahora = new Date();
+    objetivo.forEach(function (x) {
+      if (modo === 'reabrir') {
+        shLote.getRange(x.filaSheet, 7).setValue('CREADO');
+        shLote.getRange(x.filaSheet, 8).setValue('');
+        shLote.getRange(x.filaSheet, 9).setValue('');
+      } else {
+        shLote.getRange(x.filaSheet, 7).setValue('CERRADO');
+        shLote.getRange(x.filaSheet, 8).setValue(auth.usuario.nombre);
+        shLote.getRange(x.filaSheet, 9).setValue(ahora);
+      }
+    });
+    SpreadsheetApp.flush();
+
+    // Que OTs quedaron al 100% (todas sus filas CERRADO) -> listas para firma.
+    const tocados = {};
+    objetivo.forEach(function (x) { tocados[x.folio] = true; });
+    const foliosTocados = Object.keys(tocados);
+    const frescas = shLote.getDataRange().getValues();
+    const otsAl100 = foliosTocados.filter(function (folio) {
+      let tot = 0, cer = 0;
+      for (let i = 1; i < frescas.length; i++) {
+        if (String(frescas[i][1] || '').trim() !== folio) continue;
+        tot++;
+        if (String(frescas[i][6] || '').trim().toUpperCase() === 'CERRADO') cer++;
+      }
+      return tot > 0 && tot === cer;
+    });
+
+    foliosTocados.forEach(function (folio) {
+      appendLog(ss, folio, 'AVANCE_' + modo.toUpperCase(), auth.usuario.nombre, '');
+    });
+
+    return jsonResp({
+      ok: true, dryRun: false, preview: res,
+      aplicados: objetivo.length, otsAl100: otsAl100
+    });
+  } catch (err) {
+    return jsonResp({ ok: false, error: err.message });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// ── Resolvedor de avance por mark (v2.39, PURO — testeable sin Sheets) ──
+// Toma identificadores crudos (label visto como '404A5', o el MK canonico) y los
+// resuelve a filas concretas de OT_LOTE_MARKS, clasificadas en buckets.
+// Es PURO a proposito: no toca SpreadsheetApp, asi que _testResolverAvanceMarks()
+// lo ejercita desde el editor sin escribir nada (mismo patron que
+// _testQuincenaParaFecha de cami-nomina).
+//
+// Reglas de negocio (acordadas con Alfredo, 18-jul-2026):
+//   - Solo OTs en EN_PROCESO (recepcion firmada). APROBADA NO cuenta: cerrar
+//     marks de una OT que el taller ni ha recibido es incoherente.
+//   - Scope por etapa: solo filas cuya OT sea de la etapa pedida.
+//   - mark en exactamente 1 OT viva -> accionable.
+//     en varias -> ambiguo (lo resuelve el usuario, NO se adivina).
+//     en ninguna -> noEncontrados.
+//   - Ya en el estado destino -> yaEnEstado (idempotente: re-enviar no rompe).
+//   - Marks viejos (relabeleo REV0) se canonicalizan con mergeMap antes de buscar.
+function _resolverAvanceMarks(labels, modo, ctx) {
+  const out = { cerrar: [], reabrir: [], noEncontrados: [], ambiguos: [], yaEnEstado: [] };
+  const estadoDestino = (modo === 'reabrir') ? 'CREADO'  : 'CERRADO';
+  const estadoOrigen  = (modo === 'reabrir') ? 'CERRADO' : 'CREADO';
+
+  // Normaliza y deduplica la entrada (el pegado masivo trae repetidos).
+  const vistos = {};
+  const limpios = [];
+  (labels || []).forEach(function (l) {
+    const s = String(l || '').trim();
+    if (!s) return;
+    const k = s.toUpperCase();
+    if (vistos[k]) return;
+    vistos[k] = true;
+    limpios.push(s);
+  });
+
+  // Indice de resolucion. Acepta label ('404A5') Y mark canonico ('MK-...'):
+  // el formulario por lista manda labels, el panel por OT manda MK-ids.
+  const idx = {};
+  Object.keys(ctx.labelToMark || {}).forEach(function (lb) {
+    idx[String(lb).trim().toUpperCase()] = ctx.labelToMark[lb];
+  });
+
+  limpios.forEach(function (entrada) {
+    let mark = idx[entrada.toUpperCase()];
+    if (!mark) {
+      out.noEncontrados.push({ label: entrada, motivo: 'no existe en CAT_ITEMS del proyecto' });
+      return;
+    }
+    if (ctx.mergeMap && ctx.mergeMap[mark]) mark = ctx.mergeMap[mark];
+
+    // Filas de ese mark en OTs vivas de la etapa pedida.
+    const candidatas = [];
+    for (let i = 1; i < ctx.loteRows.length; i++) {
+      const r = ctx.loteRows[i];
+      const folio = String(r[1] || '').trim();
+      if (!folio) continue;
+      let mk = String(r[3] || '').trim();
+      if (ctx.mergeMap && ctx.mergeMap[mk]) mk = ctx.mergeMap[mk];
+      if (mk !== mark) continue;
+      if (String(ctx.otEstadoPorFolio[folio] || '').trim().toUpperCase() !== 'EN_PROCESO') continue;
+      if (ctx.etapa &&
+          String(ctx.otEtapaPorFolio[folio] || '').trim().toUpperCase() !== String(ctx.etapa).trim().toUpperCase()) continue;
+      candidatas.push({
+        label: entrada,
+        mark: mark,
+        folio: folio,
+        filaSheet: i + 1,                                   // 1-indexed, listo para getRange
+        estado: String(r[6] || '').trim().toUpperCase()
+      });
+    }
+
+    if (!candidatas.length) {
+      out.noEncontrados.push({ label: entrada, mark: mark, motivo: 'sin OT EN_PROCESO en esta etapa' });
+      return;
+    }
+
+    const accionables = candidatas.filter(function (c) { return c.estado === estadoOrigen; });
+    const yaEstan     = candidatas.filter(function (c) { return c.estado === estadoDestino; });
+    if (!accionables.length) {
+      yaEstan.forEach(function (c) { out.yaEnEstado.push(c); });
+      return;
+    }
+    if (accionables.length > 1) {
+      out.ambiguos.push({ label: entrada, mark: mark, opciones: accionables });
+      return;
+    }
+    (modo === 'reabrir' ? out.reabrir : out.cerrar).push(accionables[0]);
+  });
+
+  return out;
+}
+
+// ── TEST del resolvedor (correr desde el editor de Apps Script) ────
+// Seleccionar _testResolverAvanceMarks -> Ejecutar -> ver Registro de ejecucion.
+// No escribe nada: la funcion bajo prueba es pura.
+function _testResolverAvanceMarks() {
+  const ctx = {
+    loteRows: [
+      ['id_lote','folio','proyecto','mark','qty','plano','estado_lote','cerrado_por','fecha_cierre','ts'],
+      ['L1','OT-1','P','MK-AAA',5,'400','CREADO','','',''],    // fila sheet 2
+      ['L2','OT-1','P','MK-BBB',7,'400','CERRADO','Ana','',''],// fila sheet 3
+      ['L3','OT-2','P','MK-CCC',3,'401','CREADO','','',''],    // fila sheet 4
+      ['L4','OT-3','P','MK-AAA',2,'400','CREADO','','','']     // fila sheet 5 (mismo mark, otra OT viva)
+    ],
+    otEstadoPorFolio: { 'OT-1': 'EN_PROCESO', 'OT-2': 'APROBADA', 'OT-3': 'EN_PROCESO' },
+    otEtapaPorFolio:  { 'OT-1': 'HABILITADO', 'OT-2': 'HABILITADO', 'OT-3': 'HABILITADO' },
+    etapa: 'HABILITADO',
+    labelToMark: { 'a1': 'MK-AAA', 'b1': 'MK-BBB', 'c1': 'MK-CCC', 'viejo': 'MK-OLD',
+                   'MK-AAA': 'MK-AAA', 'MK-BBB': 'MK-BBB', 'MK-CCC': 'MK-CCC' },
+    mergeMap: { 'MK-OLD': 'MK-BBB' }
+  };
+  const casos = [
+    { n: 'ambiguo (mark en 2 OTs EN_PROCESO)', labels: ['a1'], modo: 'cerrar',
+      esperado: { cerrar: 0, ambiguos: 1, noEncontrados: 0, yaEnEstado: 0 } },
+    { n: 'ya cerrado -> idempotente',          labels: ['b1'], modo: 'cerrar',
+      esperado: { cerrar: 0, ambiguos: 0, noEncontrados: 0, yaEnEstado: 1 } },
+    { n: 'OT APROBADA no cuenta',              labels: ['c1'], modo: 'cerrar',
+      esperado: { cerrar: 0, ambiguos: 0, noEncontrados: 1, yaEnEstado: 0 } },
+    { n: 'entrada inexistente',                labels: ['zzz'], modo: 'cerrar',
+      esperado: { cerrar: 0, ambiguos: 0, noEncontrados: 1, yaEnEstado: 0 } },
+    { n: 'merge REV0: viejo -> MK-BBB',        labels: ['viejo'], modo: 'cerrar',
+      esperado: { cerrar: 0, ambiguos: 0, noEncontrados: 0, yaEnEstado: 1 } },
+    { n: 'reabrir un cerrado',                 labels: ['b1'], modo: 'reabrir',
+      esperado: { reabrir: 1, ambiguos: 0, noEncontrados: 0, yaEnEstado: 0 } },
+    { n: 'por MK-id (panel por OT)',           labels: ['MK-CCC'], modo: 'cerrar',
+      esperado: { cerrar: 0, ambiguos: 0, noEncontrados: 1, yaEnEstado: 0 } },
+    { n: 'dedup de entrada repetida',          labels: ['b1', 'B1', ' b1 '], modo: 'cerrar',
+      esperado: { cerrar: 0, ambiguos: 0, noEncontrados: 0, yaEnEstado: 1 } }
+  ];
+  let pass = 0;
+  casos.forEach(function (c) {
+    const r = _resolverAvanceMarks(c.labels, c.modo, ctx);
+    const got = {
+      cerrar: (r.cerrar || []).length, reabrir: (r.reabrir || []).length,
+      ambiguos: (r.ambiguos || []).length, noEncontrados: (r.noEncontrados || []).length,
+      yaEnEstado: (r.yaEnEstado || []).length
+    };
+    let ok = true;
+    Object.keys(c.esperado).forEach(function (k) { if (got[k] !== c.esperado[k]) ok = false; });
+    Logger.log((ok ? 'PASS' : 'FAIL') + ' — ' + c.n + ' → ' + JSON.stringify(got));
+    if (ok) pass++;
+  });
+  Logger.log('RESULTADO: ' + pass + '/' + casos.length);
 }
 
 // ── HELPERS DE NEGOCIO ─────────────────────────────────────────
