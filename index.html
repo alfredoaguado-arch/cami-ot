@@ -4,7 +4,22 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>CAMI — Orden de Trabajo</title>
-<!-- v2.41 (2026-07-18): AVANCE POR MARK en el modal de cierre (pareja del backend v2.39.0).
+<!-- v2.42 (2026-07-18): AVANCE POR LISTA cross-OT (completa el sprint de cierre parcial).
+     Caso real: terminan 40 piezas de habilitado repartidas en 8 OTs; ir OT por OT era justo el
+     trabajo a evitar. En la pestaña Cerrar hay un panel plegable "Registrar avance por lista":
+     eliges proyecto+etapa (las opciones salen de las OTs EN_PROCESO, así solo ofrece contextos
+     reales), escribes o PEGAS la lista (coma/espacio/salto de línea → chips), y el backend
+     reparte cada mark a la OT que lo contiene.
+     - Sugerencias por <datalist>: solo marks elegibles. Modo "Marcar terminados" ofrece los
+       CREADO; modo "Reabrir" ofrece los CERRADO. Los chips inválidos salen en rojo pero NO se
+       descartan — el preview explica por qué (sin OT en proceso / ya cerrado / no existe).
+     - PREVIEW OBLIGATORIO antes de escribir: se aplican / ambiguos / sin OT / ya estaban, con
+       el folio destino de cada pieza. Mismo endpoint y mismo resolvedor en preview y ejecución.
+     - Un mark en varias OTs vivas sale como "ambiguo" y NO se aplica: se resuelve desde el modal
+       de esa OT (el sistema no adivina cuál).
+     - Al aplicar, avisa qué OTs quedaron al 100% y refresca la lista por cerrar.
+     ── v2.41 ──
+     v2.41 (2026-07-18): AVANCE POR MARK en el modal de cierre (pareja del backend v2.39.0).
      La OT agrupa piezas por perfil (en taller se cortan juntas), pero se terminan en momentos
      distintos. Antes el cierre era todo-o-nada: los marks terminados no se veían en la sábana
      hasta que la OT entera cerraba — avance inexacto. Ahora el modal de cierre trae una sección
@@ -509,6 +524,37 @@ textarea{resize:vertical;min-height:60px}
         <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4m0 1a1 1 0 0 1 1 -1h2a1 1 0 0 1 1 1v2a1 1 0 0 1 -1 1h-2a1 1 0 0 1 -1 -1z"/><path d="M4 16m0 1a1 1 0 0 1 1 -1h2a1 1 0 0 1 1 1v2a1 1 0 0 1 -1 1h-2a1 1 0 0 1 -1 -1z"/><path d="M16 4m0 1a1 1 0 0 1 1 -1h2a1 1 0 0 1 1 1v2a1 1 0 0 1 -1 1h-2a1 1 0 0 1 -1 -1z"/><path d="M4 12l4 0"/><path d="M12 4l0 4"/><path d="M20 12l-6 0"/><path d="M12 16l0 .01"/><path d="M16 12l4 0"/><path d="M20 16l0 4l-4 0"/><path d="M12 20l-4 0"/></svg>
         Escanear OT a cerrar
       </button>
+      <!-- v2.42: avance por LISTA cross-OT. Pegas todos los marks terminados de una
+           etapa y el sistema los reparte a las OTs que los contienen. Preview
+           obligatorio antes de escribir. -->
+      <div class="section-title" style="margin-bottom:.5rem">
+        <span>Registrar avance por lista</span>
+        <button class="btn-add-item" onclick="avTogglePanel()" id="av-toggle">▼ Abrir</button>
+      </div>
+      <div id="av-panel" style="display:none;border:1px solid #d3d1c7;border-radius:8px;padding:10px;margin-bottom:1rem;background:#faf9f6">
+        <p style="font-size:11px;color:#4A4A48;margin:0 0 8px">
+          Escribe o <b>pega</b> los marks terminados (coma, espacio o salto de línea). Solo se aceptan
+          piezas de OTs <b>en proceso</b> de la etapa elegida. Verás un preview antes de aplicar.
+        </p>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
+          <select id="av-proy-etapa" onchange="avCargarIndice()" style="flex:1;min-width:180px;padding:6px;border:1px solid #d3d1c7;border-radius:6px;font-size:12px;font-family:'Courier New',monospace"></select>
+          <select id="av-modo" onchange="avActualizarSugerencias()" style="padding:6px;border:1px solid #d3d1c7;border-radius:6px;font-size:12px;font-family:'Courier New',monospace">
+            <option value="cerrar">Marcar terminados</option>
+            <option value="reabrir">Reabrir</option>
+          </select>
+        </div>
+        <input type="text" id="av-input" list="av-datalist" autocomplete="off"
+               placeholder="Mark terminado (Enter para agregar) o pega la lista…"
+               style="width:100%;padding:8px;border:1px solid #d3d1c7;border-radius:6px;font-size:12px;font-family:'Courier New',monospace"/>
+        <datalist id="av-datalist"></datalist>
+        <div id="av-chips" style="display:flex;flex-wrap:wrap;gap:4px;margin-top:8px"></div>
+        <div id="av-preview" style="margin-top:8px"></div>
+        <div style="display:flex;gap:6px;margin-top:8px">
+          <button type="button" class="btn-secondary" style="padding:8px;font-size:12px" onclick="avLimpiar()">Limpiar</button>
+          <button type="button" class="btn-success" style="flex:1;padding:8px;font-size:12px" onclick="avPreview()">Ver preview</button>
+        </div>
+      </div>
+
       <div class="section-title" style="margin-bottom:1rem">
         <span>OT por Cerrar</span>
         <button class="btn-add-item" onclick="cargarPorCerrar()">↻ Refrescar</button>
@@ -3259,6 +3305,185 @@ async function registrarAvance(modo) {
   } catch (e) {
     alert('Error: ' + e.message);
   }
+}
+
+/* ── v2.42: AVANCE POR LISTA (cross-OT) ─────────────────────────────
+   Caso de uso real: terminan 40 piezas de habilitado repartidas en 8 OTs. Ir OT
+   por OT es el trabajo que queremos evitar. Aqui se pega la lista completa y el
+   backend (avanceMarks) la reparte a las OTs que las contienen.
+   Seguridad: SIEMPRE preview (dryRun) antes de escribir; el mismo endpoint y el
+   mismo resolvedor corren en las dos pasadas, asi que lo que ves es lo que pasa. */
+let _avIndex = [];   // marks elegibles de la etapa elegida (de listaLoteMarks)
+let _avChips = [];   // entradas del usuario (labels)
+
+function avTogglePanel() {
+  const p = document.getElementById('av-panel');
+  const b = document.getElementById('av-toggle');
+  const abierto = p.style.display !== 'none';
+  p.style.display = abierto ? 'none' : '';
+  b.textContent = abierto ? '▼ Abrir' : '▲ Cerrar';
+  if (!abierto) { avPoblarSelector(); avBindInput(); }
+}
+
+// Las combinaciones proyecto|etapa salen de las OTs por cerrar (todas EN_PROCESO),
+// asi el selector solo ofrece contextos donde de verdad se puede registrar avance.
+function avPoblarSelector() {
+  const sel = document.getElementById('av-proy-etapa');
+  const vistos = {}, opts = [];
+  (_cerrarCache || []).forEach(ot => {
+    const k = ot.proyecto + '|' + ot.etapa;
+    if (vistos[k]) return;
+    vistos[k] = true;
+    opts.push(`<option value="${escapeAttr(k)}">${escapeHtml(ot.proyecto)} · ${escapeHtml(ot.etapa)}</option>`);
+  });
+  sel.innerHTML = opts.length ? opts.join('') : '<option value="">(no hay OTs en proceso)</option>';
+  avCargarIndice();
+}
+
+async function avCargarIndice() {
+  const val = (document.getElementById('av-proy-etapa') || {}).value || '';
+  _avIndex = [];
+  if (!val) { avActualizarSugerencias(); return; }
+  const [proyecto, etapa] = val.split('|');
+  try {
+    const [r, labels] = await Promise.all([
+      fetch(SCRIPT_URL + '?accion=listaLoteMarks&proyecto=' + encodeURIComponent(proyecto)).then(x => x.json()),
+      _cargarLabelsProyecto(proyecto)
+    ]);
+    _avIndex = ((r && r.marks) || [])
+      .filter(m => String(m.estado_ot || '').toUpperCase() === 'EN_PROCESO')
+      .filter(m => String(m.etapa || '').toUpperCase() === String(etapa).toUpperCase())
+      .map(m => Object.assign({}, m, { label: labels[m.mark] || m.mark }));
+  } catch (e) { _avIndex = []; }
+  avActualizarSugerencias();
+}
+
+// modo cerrar  -> ofrece las que siguen CREADO (pendientes)
+// modo reabrir -> ofrece las que ya estan CERRADO
+function avElegibles() {
+  const modo = (document.getElementById('av-modo') || {}).value || 'cerrar';
+  const quiero = (modo === 'reabrir') ? 'CERRADO' : 'CREADO';
+  return _avIndex.filter(m => String(m.estado_lote || '').toUpperCase() === quiero);
+}
+
+function avActualizarSugerencias() {
+  const dl = document.getElementById('av-datalist');
+  if (!dl) return;
+  const vistos = {}, opts = [];
+  avElegibles().forEach(m => {
+    if (vistos[m.label]) return;
+    vistos[m.label] = true;
+    opts.push(`<option value="${escapeAttr(m.label)}">${escapeHtml(m.folio)} · ×${m.qty}</option>`);
+  });
+  dl.innerHTML = opts.join('');
+  avRenderChips();
+}
+
+function avBindInput() {
+  const inp = document.getElementById('av-input');
+  if (!inp || inp.dataset.bound) return;
+  inp.dataset.bound = '1';
+  inp.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); avAgregarChip(inp.value); inp.value = ''; }
+  });
+  // Pegado masivo: tokeniza por coma, punto y coma, espacio o salto de linea.
+  inp.addEventListener('paste', e => {
+    const txt = (e.clipboardData || window.clipboardData).getData('text') || '';
+    if (!/[\s,;]/.test(txt)) return;            // valor unico: comportamiento normal
+    e.preventDefault();
+    txt.split(/[\s,;]+/).forEach(t => avAgregarChip(t));
+    inp.value = '';
+  });
+}
+
+function avAgregarChip(txt) {
+  const s = String(txt || '').trim();
+  if (!s) return;
+  if (_avChips.some(c => c.toUpperCase() === s.toUpperCase())) return;   // dedup
+  _avChips.push(s);
+  avRenderChips();
+}
+function avQuitarChip(i) { _avChips.splice(i, 1); avRenderChips(); }
+function avLimpiar() { _avChips = []; document.getElementById('av-preview').innerHTML = ''; avRenderChips(); }
+
+function avRenderChips() {
+  const box = document.getElementById('av-chips');
+  if (!box) return;
+  const validos = {};
+  avElegibles().forEach(m => { validos[String(m.label).toUpperCase()] = true; });
+  box.innerHTML = _avChips.map((c, i) => {
+    const ok = validos[c.toUpperCase()];
+    // Invalido = no esta entre las elegibles. NO se descarta: el preview del backend
+    // explica por que (sin OT en proceso, ya cerrado, no existe...).
+    const bg = ok ? '#EAF3DE' : '#FCEBEB';
+    const bd = ok ? '#3B6D11' : '#A32D2D';
+    return `<span style="display:inline-flex;align-items:center;gap:4px;background:${bg};border:1px solid ${bd};
+      border-radius:12px;padding:2px 8px;font-size:11px;font-family:'Courier New',monospace">
+      ${escapeHtml(c)}<b style="cursor:pointer" onclick="avQuitarChip(${i})">×</b></span>`;
+  }).join('') + (_avChips.length ? `<span style="font-size:11px;color:#888780;align-self:center">${_avChips.length} pieza(s)</span>` : '');
+}
+
+async function avPost(dryRun) {
+  const val = (document.getElementById('av-proy-etapa') || {}).value || '';
+  if (!val) { alert('Selecciona proyecto y etapa.'); return null; }
+  if (!_avChips.length) { alert('Agrega al menos un mark.'); return null; }
+  const token = getToken(); if (!token) { abrirReloginModal(); return null; }
+  const [proyecto, etapa] = val.split('|');
+  const modo = (document.getElementById('av-modo') || {}).value || 'cerrar';
+  const r = await fetch(SCRIPT_URL, {
+    method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({
+      action: 'avanceMarks', token: token, proyecto: proyecto, etapa: etapa,
+      modo: modo, dryRun: !!dryRun, marks: _avChips
+    })
+  });
+  const d = await r.json();
+  if (!d.ok) {
+    if (/sesion/i.test(d.error || '')) { abrirReloginModal(); return null; }
+    alert('Error: ' + (d.error || 'desconocido'));
+    return null;
+  }
+  return d;
+}
+
+async function avPreview() {
+  const cont = document.getElementById('av-preview');
+  cont.innerHTML = '<div style="font-size:11px;color:#888780">Calculando…</div>';
+  const d = await avPost(true);
+  if (!d) { cont.innerHTML = ''; return; }
+  const modo = (document.getElementById('av-modo') || {}).value || 'cerrar';
+  const p = d.preview || {};
+  const aplicables = (modo === 'reabrir' ? (p.reabrir || []) : (p.cerrar || []));
+  const linea = (txt, color) => `<div style="font-size:11px;color:${color};padding:2px 0">${txt}</div>`;
+  cont.innerHTML = `
+    <div style="border:1px solid #d3d1c7;border-radius:6px;padding:8px;background:#fff">
+      <div style="font-size:12px;margin-bottom:6px">
+        <b style="color:#3B6D11">${aplicables.length}</b> se aplicarán ·
+        <b style="color:#8B6914">${(p.ambiguos || []).length}</b> ambiguos ·
+        <b style="color:#A32D2D">${(p.noEncontrados || []).length}</b> sin OT ·
+        <b style="color:#888780">${(p.yaEnEstado || []).length}</b> ya estaban
+      </div>
+      ${aplicables.map(x => linea('✓ ' + escapeHtml(x.label) + ' → ' + escapeHtml(x.folio), '#3B6D11')).join('')}
+      ${(p.ambiguos || []).map(a => linea('⚠ ' + escapeHtml(a.label) + ' está en ' + a.opciones.length +
+          ' OTs (' + a.opciones.map(o => escapeHtml(o.folio)).join(', ') + ') — resuélvelo desde el modal de esa OT', '#8B6914')).join('')}
+      ${(p.noEncontrados || []).map(x => linea('✕ ' + escapeHtml(x.label) + ' — ' + escapeHtml(x.motivo), '#A32D2D')).join('')}
+      ${(p.yaEnEstado || []).map(x => linea('• ' + escapeHtml(x.label) + ' ya estaba así (' + escapeHtml(x.folio) + ')', '#888780')).join('')}
+      <button type="button" class="btn-success" style="width:100%;margin-top:8px;padding:8px;font-size:12px"
+        onclick="avAplicar()" ${aplicables.length ? '' : 'disabled'}>
+        Confirmar y aplicar (${aplicables.length})
+      </button>
+    </div>`;
+}
+
+async function avAplicar() {
+  const d = await avPost(false);
+  if (!d) return;
+  let msg = d.aplicados + ' pieza(s) aplicadas.';
+  if ((d.otsAl100 || []).length) msg += '\n\n✓ Al 100% y listas para firmar el cierre:\n' + d.otsAl100.join('\n');
+  alert(msg);
+  avLimpiar();
+  await avCargarIndice();     // refrescar elegibles con el estado nuevo
+  await cargarPorCerrar();    // refrescar la lista de OTs por cerrar
 }
 
 function cerrarCerrarModal() {
