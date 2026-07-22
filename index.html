@@ -4,7 +4,15 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>CAMI — Orden de Trabajo</title>
-<!-- v2.42 (2026-07-18): AVANCE POR LISTA cross-OT (completa el sprint de cierre parcial).
+<!-- v2.43 (2026-07-22): NOMBRES VIEJOS en el preview del avance por lista (pareja del backend v2.40.0).
+     Producción reporta con los nombres previos a la actualización del BOM ("terminé 419PL1",
+     que hoy es 430PL1). Antes ese nombre moría como "no encontrado" y el cierre se perdía.
+     Ahora el preview trae un bloque azul "NOMBRES VIEJOS" con la traducción, la fracción que
+     representa (1 de 7 pz) y el folio destino. NO se aplican solos: el mark viejo fue absorbido
+     por el nuevo y suele ser sólo una parte, así que cerrar el nuevo completo declararía
+     terminadas piezas que nadie hizo. Decide el supervisor.
+     ── v2.42 ──
+     v2.42 (2026-07-18): AVANCE POR LISTA cross-OT (completa el sprint de cierre parcial).
      Caso real: terminan 40 piezas de habilitado repartidas en 8 OTs; ir OT por OT era justo el
      trabajo a evitar. En la pestaña Cerrar hay un panel plegable "Registrar avance por lista":
      eliges proyecto+etapa (las opciones salen de las OTs EN_PROCESO, así solo ofrece contextos
@@ -3455,14 +3463,30 @@ async function avPreview() {
   const p = d.preview || {};
   const aplicables = (modo === 'reabrir' ? (p.reabrir || []) : (p.cerrar || []));
   const linea = (txt, color) => `<div style="font-size:11px;color:${color};padding:2px 0">${txt}</div>`;
+  const trad = p.traducidos || [];
   cont.innerHTML = `
     <div style="border:1px solid #d3d1c7;border-radius:6px;padding:8px;background:#fff">
       <div style="font-size:12px;margin-bottom:6px">
         <b style="color:#3B6D11">${aplicables.length}</b> se aplicarán ·
+        ${trad.length ? `<b style="color:#2A5A8C">${trad.length}</b> nombres viejos · ` : ''}
         <b style="color:#8B6914">${(p.ambiguos || []).length}</b> ambiguos ·
         <b style="color:#A32D2D">${(p.noEncontrados || []).length}</b> sin OT ·
         <b style="color:#888780">${(p.yaEnEstado || []).length}</b> ya estaban
       </div>
+      ${trad.length ? `<div style="border:1px solid #2A5A8C;border-radius:5px;padding:6px;margin:6px 0;background:#E8F0F8">
+        <div style="font-size:11px;font-weight:700;color:#2A5A8C;margin-bottom:4px">
+          NOMBRES VIEJOS — no se aplican solos, revísalos
+        </div>
+        ${trad.map(t => `<div style="font-size:11px;padding:2px 0;color:#2A5A8C">
+          ${escapeHtml(t.label)} → hoy es <b>${escapeHtml(t.nuevo_label)}</b> ·
+          ${t.qty_vieja !== '' && t.qty_vieja != null ? `son <b>${t.qty_vieja}</b> de ${t.qty_nueva} pz` : `el mark completo son ${t.qty_nueva} pz`} ·
+          ${escapeHtml(t.folio)}
+        </div>`).join('')}
+        <div style="font-size:10px;color:#4A4A48;margin-top:4px">
+          El mark viejo fue absorbido por el nuevo: normalmente es sólo una parte. Cierra
+          <b>${escapeHtml(trad[0].nuevo_label)}</b> (u otro) desde su OT sólo si YA están todas sus piezas.
+        </div>
+      </div>` : ''}
       ${aplicables.map(x => linea('✓ ' + escapeHtml(x.label) + ' → ' + escapeHtml(x.folio), '#3B6D11')).join('')}
       ${(p.ambiguos || []).map(a => linea('⚠ ' + escapeHtml(a.label) + ' está en ' + a.opciones.length +
           ' OTs (' + a.opciones.map(o => escapeHtml(o.folio)).join(', ') + ') — resuélvelo desde el modal de esa OT', '#8B6914')).join('')}

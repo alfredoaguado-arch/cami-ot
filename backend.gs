@@ -1,5 +1,5 @@
 // ================================================================
-// CAMI - Apps Script ORDENES DE TRABAJO v2.39.0  (cierre parcial de OT: avance por mark + gate 100% en el cierre formal)
+// CAMI - Apps Script ORDENES DE TRABAJO v2.40.0  (alias de nombres viejos de produccion en el cierre por lista)
 // Bound al Sheet de OT (CAMI_OT_DB) - ID 12WU13Qp2DPXjaqAMuXg-yYYizuKqMU1K04v0nw0Ud7o
 //
 // REDISENIO COMPLETO vs v1.3:
@@ -48,7 +48,28 @@
 // Folder Drive Firmas:  (subcarpeta automatica dentro del folder de OT)
 // ================================================================
 
-const MODULE_VERSION = '2.39.0';
+const MODULE_VERSION = '2.40.0';
+// v2.40.0 (2026-07-22): ALIAS de nombres VIEJOS en el cierre por lista.
+//   Problema real (Alfredo, 22-jul): producción reporta con los nombres de hace un mes,
+//   previos a la actualización del BOM. Dicen "terminé 419PL1", que hoy es "430PL1". Ese
+//   label ya NO existe en CAT_ITEMS, así que el resolvedor moría en el primer lookup y el
+//   cierre se PERDÍA EN SILENCIO. Renombrar en piso es inviable: ya hay cientos de piezas
+//   fabricadas y rotuladas con los nombres viejos.
+//   - aliasIndex: nombre viejo -> mark de hoy. Se DERIVA de CAT_MARK_MERGE sin cargar
+//     datos nuevos, porque el id viejo lleva el nombre adentro ('SE-419PL1' -> '419PL1').
+//     Las 40 absorciones del BOM ya estaban en esa hoja. Los old_canon con id hash
+//     (MK-xxxxxxxx) no llevan nombre legible y quedan fuera hasta cargar labels explícitos.
+//     Guard: si el nombre viejo SIGUE VIVO en CAT_ITEMS, no se trata como alias.
+//   - Bucket 'traducidos' (NUEVO): un nombre viejo NUNCA se aplica solo. El mark viejo fue
+//     ABSORBIDO por el nuevo, así que casi siempre es una FRACCIÓN de él (419PL1 = 1 de las
+//     7 pz de 430PL1). Cerrar el nuevo completo declararía terminadas piezas que nadie hizo.
+//     Se reporta la traducción + la fracción y decide el supervisor.
+//   - CAT_MARK_MERGE crece con col 3 (idx 2) OPCIONAL 'qty_absorbida'. Vacía = el alias
+//     funciona igual, solo sin mostrar la fracción. Retrocompatible: los consumidores
+//     actuales (cami-procesos canonMark) leen sólo cols 0 y 1.
+//   PENDIENTE (sprint siguiente): acumulación automática por contribuyente —
+//   total_nuevo = porción_propia + Σ(absorbidos), validado 28/29. Requiere qty_cerrada en
+//   OT_LOTE_MARKS. Y crear PL196 (= 424PL2 1 + 428PL1 2 + 433PL5 4 = 7 pz), que hoy no existe.
 // v2.39.0 (2026-07-18): CIERRE PARCIAL DE OT — separa el AVANCE del CIERRE FORMAL.
 //   Problema: la OT es un DOCUMENTO agrupado por perfil (en taller se cortan juntos
 //   todos los L6X3-1/2X3/8), pero el AVANCE es por pieza. Amarrar el cierre al
@@ -2258,15 +2279,47 @@ function handleAvanceMarks(data) {
     }
 
     // mergeMap REV0 (old_canon -> new_canon). Hoja opcional.
-    const mergeMap = {};
+    // Col 2 (opcional, trailing): qty que aportaba el mark viejo al nuevo. Vacia
+    // mientras no se cargue — el alias funciona igual, solo sin mostrar la fraccion.
+    const mergeMap = {}, qtyVieja = {};
     const shMerge = ss.getSheetByName('CAT_MARK_MERGE');
     if (shMerge) {
       const mg = shMerge.getDataRange().getValues();
       for (let i = 1; i < mg.length; i++) {
         const o = String(mg[i][0] || '').trim(), n = String(mg[i][1] || '').trim();
-        if (o && n) mergeMap[o] = n;
+        if (!o || !n) continue;
+        mergeMap[o] = n;
+        const q = parseFloat(mg[i][2]);
+        if (isFinite(q) && q > 0) qtyVieja[o] = q;
       }
     }
+
+    // v2.40 ALIAS: nombre VIEJO -> mark de hoy. Se deriva de CAT_MARK_MERGE sin datos
+    // nuevos, porque el id viejo lleva el nombre adentro ('SE-419PL1' -> '419PL1').
+    // Los old_canon con id hash (MK-xxxxxxxx) no llevan nombre legible y no se pueden
+    // derivar — quedan fuera hasta que se carguen los labels explicitos.
+    const markToLabel = {};
+    if (shItems) {
+      const it2 = shItems.getDataRange().getValues();
+      for (let i = 1; i < it2.length; i++) {
+        if (String(it2[i][0] || '').trim() !== proyecto) continue;
+        const mk = String(it2[i][1] || '').trim(), lb = String(it2[i][2] || '').trim();
+        if (mk && lb) markToLabel[mk] = lb;
+      }
+    }
+    const aliasIndex = {};
+    Object.keys(mergeMap).forEach(function (oldCanon) {
+      if (oldCanon.indexOf('SE-') !== 0) return;                 // solo SE- lleva label legible
+      const oldLabel = oldCanon.substring(3);
+      if (labelToMark[oldLabel]) return;                         // el nombre sigue vivo: no es alias
+      const nuevoLabel = markToLabel[mergeMap[oldCanon]];
+      if (!nuevoLabel) return;
+      const mkNuevo = labelToMark[nuevoLabel];
+      if (!mkNuevo) return;
+      aliasIndex[oldLabel.toUpperCase()] = {
+        mark: mkNuevo, nuevoLabel: nuevoLabel, qtyVieja: qtyVieja[oldCanon]
+      };
+    });
 
     const res = _resolverAvanceMarks(marks, modo, {
       loteRows: loteRows,
@@ -2274,7 +2327,8 @@ function handleAvanceMarks(data) {
       otEtapaPorFolio: otEtapaPorFolio,
       etapa: etapa,
       labelToMark: labelToMark,
-      mergeMap: mergeMap
+      mergeMap: mergeMap,
+      aliasIndex: aliasIndex
     });
 
     if (dryRun) {
@@ -2344,7 +2398,7 @@ function handleAvanceMarks(data) {
 //   - Ya en el estado destino -> yaEnEstado (idempotente: re-enviar no rompe).
 //   - Marks viejos (relabeleo REV0) se canonicalizan con mergeMap antes de buscar.
 function _resolverAvanceMarks(labels, modo, ctx) {
-  const out = { cerrar: [], reabrir: [], noEncontrados: [], ambiguos: [], yaEnEstado: [] };
+  const out = { cerrar: [], reabrir: [], noEncontrados: [], ambiguos: [], yaEnEstado: [], traducidos: [] };
   const estadoDestino = (modo === 'reabrir') ? 'CREADO'  : 'CERRADO';
   const estadoOrigen  = (modo === 'reabrir') ? 'CERRADO' : 'CREADO';
 
@@ -2369,6 +2423,15 @@ function _resolverAvanceMarks(labels, modo, ctx) {
 
   limpios.forEach(function (entrada) {
     let mark = idx[entrada.toUpperCase()];
+    // v2.40 ALIAS DE NOMBRE VIEJO: produccion reporta con los nombres de hace un mes
+    // (pre-actualizacion del BOM). Ej: dicen '419PL1', que hoy es '430PL1'. Ese label
+    // ya NO existe en CAT_ITEMS, asi que el lookup de arriba falla y el dato se perdia
+    // en silencio. El aliasIndex (derivado de CAT_MARK_MERGE) lo traduce.
+    let traduccion = null;
+    if (!mark && ctx.aliasIndex) {
+      const al = ctx.aliasIndex[entrada.toUpperCase()];
+      if (al) { mark = al.mark; traduccion = al; }
+    }
     if (!mark) {
       out.noEncontrados.push({ label: entrada, motivo: 'no existe en CAT_ITEMS del proyecto' });
       return;
@@ -2392,7 +2455,8 @@ function _resolverAvanceMarks(labels, modo, ctx) {
         mark: mark,
         folio: folio,
         filaSheet: i + 1,                                   // 1-indexed, listo para getRange
-        estado: String(r[6] || '').trim().toUpperCase()
+        estado: String(r[6] || '').trim().toUpperCase(),
+        qtyFila: parseFloat(r[4]) || 0                      // col 5 qty del lote (para mostrar la fraccion)
       });
     }
 
@@ -2411,6 +2475,24 @@ function _resolverAvanceMarks(labels, modo, ctx) {
       out.ambiguos.push({ label: entrada, mark: mark, opciones: accionables });
       return;
     }
+    // v2.40: un nombre VIEJO nunca se aplica solo. El mark viejo fue ABSORBIDO por el
+    // nuevo, asi que casi siempre representa una FRACCION de el (ej. 419PL1 = 1 de las
+    // 7 pz de 430PL1). Cerrar el mark nuevo completo declararia terminadas piezas que
+    // nadie hizo. Va a un bucket aparte con la traduccion y la fraccion, para que el
+    // supervisor decida. La acumulacion automatica por contribuyente es el sprint
+    // siguiente (columna qty_cerrada).
+    if (traduccion) {
+      out.traducidos.push({
+        label:        entrada,                       // como lo reporto produccion
+        nuevo_label:  traduccion.nuevoLabel || '',   // como se llama hoy
+        mark:         mark,
+        folio:        accionables[0].folio,
+        filaSheet:    accionables[0].filaSheet,
+        qty_vieja:    (traduccion.qtyVieja === undefined ? '' : traduccion.qtyVieja),
+        qty_nueva:    accionables[0].qtyFila
+      });
+      return;
+    }
     (modo === 'reabrir' ? out.reabrir : out.cerrar).push(accionables[0]);
   });
 
@@ -2427,14 +2509,17 @@ function _testResolverAvanceMarks() {
       ['L1','OT-1','P','MK-AAA',5,'400','CREADO','','',''],    // fila sheet 2
       ['L2','OT-1','P','MK-BBB',7,'400','CERRADO','Ana','',''],// fila sheet 3
       ['L3','OT-2','P','MK-CCC',3,'401','CREADO','','',''],    // fila sheet 4
-      ['L4','OT-3','P','MK-AAA',2,'400','CREADO','','','']     // fila sheet 5 (mismo mark, otra OT viva)
+      ['L4','OT-3','P','MK-AAA',2,'400','CREADO','','',''],    // fila sheet 5 (mismo mark, otra OT viva)
+      ['L5','OT-1','P','MK-DDD',3,'400','CREADO','','','']     // fila sheet 6 (destino del alias)
     ],
     otEstadoPorFolio: { 'OT-1': 'EN_PROCESO', 'OT-2': 'APROBADA', 'OT-3': 'EN_PROCESO' },
     otEtapaPorFolio:  { 'OT-1': 'HABILITADO', 'OT-2': 'HABILITADO', 'OT-3': 'HABILITADO' },
     etapa: 'HABILITADO',
-    labelToMark: { 'a1': 'MK-AAA', 'b1': 'MK-BBB', 'c1': 'MK-CCC', 'viejo': 'MK-OLD',
-                   'MK-AAA': 'MK-AAA', 'MK-BBB': 'MK-BBB', 'MK-CCC': 'MK-CCC' },
-    mergeMap: { 'MK-OLD': 'MK-BBB' }
+    labelToMark: { 'a1': 'MK-AAA', 'b1': 'MK-BBB', 'c1': 'MK-CCC', 'viejo': 'MK-OLD', 'd1': 'MK-DDD',
+                   'MK-AAA': 'MK-AAA', 'MK-BBB': 'MK-BBB', 'MK-CCC': 'MK-CCC', 'MK-DDD': 'MK-DDD' },
+    mergeMap: { 'MK-OLD': 'MK-BBB' },
+    // v2.40: '419PL1' es un nombre que produccion sigue usando; hoy la pieza es 'd1'.
+    aliasIndex: { '419PL1': { mark: 'MK-DDD', nuevoLabel: 'd1', qtyVieja: 1 } }
   };
   const casos = [
     { n: 'ambiguo (mark en 2 OTs EN_PROCESO)', labels: ['a1'], modo: 'cerrar',
@@ -2452,7 +2537,12 @@ function _testResolverAvanceMarks() {
     { n: 'por MK-id (panel por OT)',           labels: ['MK-CCC'], modo: 'cerrar',
       esperado: { cerrar: 0, ambiguos: 0, noEncontrados: 1, yaEnEstado: 0 } },
     { n: 'dedup de entrada repetida',          labels: ['b1', 'B1', ' b1 '], modo: 'cerrar',
-      esperado: { cerrar: 0, ambiguos: 0, noEncontrados: 0, yaEnEstado: 1 } }
+      esperado: { cerrar: 0, ambiguos: 0, noEncontrados: 0, yaEnEstado: 1 } },
+    // v2.40: nombre viejo de produccion -> se traduce pero NO se aplica solo.
+    { n: 'alias nombre viejo -> traducidos (no cierra)', labels: ['419PL1'], modo: 'cerrar',
+      esperado: { cerrar: 0, traducidos: 1, noEncontrados: 0, ambiguos: 0 } },
+    { n: 'nombre vivo NO entra a traducidos',  labels: ['d1'], modo: 'cerrar',
+      esperado: { cerrar: 1, traducidos: 0, noEncontrados: 0, ambiguos: 0 } }
   ];
   let pass = 0;
   casos.forEach(function (c) {
@@ -2460,7 +2550,7 @@ function _testResolverAvanceMarks() {
     const got = {
       cerrar: (r.cerrar || []).length, reabrir: (r.reabrir || []).length,
       ambiguos: (r.ambiguos || []).length, noEncontrados: (r.noEncontrados || []).length,
-      yaEnEstado: (r.yaEnEstado || []).length
+      yaEnEstado: (r.yaEnEstado || []).length, traducidos: (r.traducidos || []).length
     };
     let ok = true;
     Object.keys(c.esperado).forEach(function (k) { if (got[k] !== c.esperado[k]) ok = false; });
