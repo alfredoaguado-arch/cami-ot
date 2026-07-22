@@ -4,7 +4,12 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>CAMI — Orden de Trabajo</title>
-<!-- v2.44 (2026-07-22): NOMBRES VIEJOS también en la SUGERENCIA y en el chip.
+<!-- v2.45 (2026-07-22): fix — preferir MK- sobre SE- al resolver el alias. Un label existe
+     DOS veces en CAT_ITEMS (430PL1 → SE-430PL1 Y MK-BABEE0E7) y ganaba el último; como las
+     filas de OT traen el MK-, el alias apuntaba a un id inexistente y "419PL1" no se sugería.
+     Pareja del backend v2.40.1. TRAMPA RECURRENTE: 3ª vez que muerde este ecosistema.
+     ── v2.44 ──
+     v2.44 (2026-07-22): NOMBRES VIEJOS también en la SUGERENCIA y en el chip.
      v2.43 los traducía sólo en el preview, así que al teclear "419" el autocompletado no
      mostraba nada y el chip salía rojo — parecía no soportado. Ahora el alias se deriva
      también en el front (misma regla: el id viejo de CAT_MARK_MERGE lleva el nombre
@@ -3377,9 +3382,15 @@ async function avCargarIndice() {
       .filter(m => String(m.estado_ot || '').toUpperCase() === 'EN_PROCESO')
       .filter(m => String(m.etapa || '').toUpperCase() === String(etapa).toUpperCase())
       .map(m => Object.assign({}, m, { label: labels[m.mark] || m.mark }));
-    // labels vivos (para no tratar como alias un nombre que sigue existiendo)
+    // labels vivos (para no tratar como alias un nombre que sigue existiendo).
+    // TRAMPA: un label existe DOS veces en CAT_ITEMS (SE-xxx y MK-xxxxxxxx). Las filas
+    // de OT traen el MK-, así que si aquí gana el SE- el alias apunta a un id que no
+    // está en ninguna OT y la sugerencia se cae en silencio. SIEMPRE preferir MK-.
     const vivos = {};
-    Object.keys(labels || {}).forEach(mk => { vivos[String(labels[mk]).toUpperCase()] = mk; });
+    Object.keys(labels || {}).forEach(mk => {
+      const k = String(labels[mk]).toUpperCase();
+      if (!vivos[k] || (mk.indexOf('MK-') === 0 && vivos[k].indexOf('MK-') !== 0)) vivos[k] = mk;
+    });
     ((dm && dm.merges) || []).forEach(m => {
       const o = String(m.old_canon || ''), n = String(m.new_canon || '');
       if (o.indexOf('SE-') !== 0) return;                 // sólo SE- lleva nombre legible

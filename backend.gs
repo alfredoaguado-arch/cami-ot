@@ -1,5 +1,5 @@
 // ================================================================
-// CAMI - Apps Script ORDENES DE TRABAJO v2.40.0  (alias de nombres viejos de produccion en el cierre por lista)
+// CAMI - Apps Script ORDENES DE TRABAJO v2.40.1  (fix: preferir MK- sobre SE- al resolver el alias — la sugerencia se caia)
 // Bound al Sheet de OT (CAMI_OT_DB) - ID 12WU13Qp2DPXjaqAMuXg-yYYizuKqMU1K04v0nw0Ud7o
 //
 // REDISENIO COMPLETO vs v1.3:
@@ -48,7 +48,15 @@
 // Folder Drive Firmas:  (subcarpeta automatica dentro del folder de OT)
 // ================================================================
 
-const MODULE_VERSION = '2.40.0';
+const MODULE_VERSION = '2.40.1';
+// v2.40.1 (2026-07-22): fix — el alias no resolvía porque el mapa label→mark se
+//   quedaba con el SE- en vez del MK-. Un label existe DOS veces en CAT_ITEMS
+//   ('430PL1' → SE-430PL1 Y MK-BABEE0E7) y ganaba el último de la hoja. Las filas de
+//   OT_LOTE_MARKS traen el MK-, así que el alias apuntaba a un id inexistente en OTs
+//   y '419PL1' no se sugería ni resolvía. Ahora MK- siempre gana.
+//   ⚠️ TRAMPA RECURRENTE: es la 3ª vez que muerde (spot-checks del rebuild de
+//   composición, resolución de blank-MK del BOM, y ahora el alias). Cualquier mapa
+//   label→mark en este ecosistema DEBE preferir MK- sobre SE-.
 // v2.40.0 (2026-07-22): ALIAS de nombres VIEJOS en el cierre por lista.
 //   Problema real (Alfredo, 22-jul): producción reporta con los nombres de hace un mes,
 //   previos a la actualización del BOM. Dicen "terminé 419PL1", que hoy es "430PL1". Ese
@@ -2273,7 +2281,14 @@ function handleAvanceMarks(data) {
         const mk = String(it[i][1] || '').trim();                            // col 1 mark
         const lb = String(it[i][2] || '').trim();                            // col 2 label
         if (!mk) continue;
-        if (lb) labelToMark[lb] = mk;
+        // TRAMPA RECURRENTE (3a vez que muerde): un label existe DOS veces en
+        // CAT_ITEMS — como SE-xxx (el subensamble) y MK-xxxxxxxx (la pieza).
+        // Las filas de OT_LOTE_MARKS traen el MK-, asi que si el mapa se queda
+        // con el SE- el mark resuelve a un id que NO existe en ninguna OT y el
+        // cierre falla en silencio. SIEMPRE preferir MK-.
+        if (lb && (!labelToMark[lb] || (mk.indexOf('MK-') === 0 && labelToMark[lb].indexOf('MK-') !== 0))) {
+          labelToMark[lb] = mk;
+        }
         labelToMark[mk] = mk;                                                // identidad por MK-id
       }
     }
