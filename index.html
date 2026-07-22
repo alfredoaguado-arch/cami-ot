@@ -4,7 +4,15 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>CAMI — Orden de Trabajo</title>
-<!-- v2.43 (2026-07-22): NOMBRES VIEJOS en el preview del avance por lista (pareja del backend v2.40.0).
+<!-- v2.44 (2026-07-22): NOMBRES VIEJOS también en la SUGERENCIA y en el chip.
+     v2.43 los traducía sólo en el preview, así que al teclear "419" el autocompletado no
+     mostraba nada y el chip salía rojo — parecía no soportado. Ahora el alias se deriva
+     también en el front (misma regla: el id viejo de CAT_MARK_MERGE lleva el nombre
+     adentro) y los nombres viejos aparecen en el datalist como "nombre viejo → 430PL1 ·
+     HAR-HAB-100", pero SÓLO si su mark de hoy está abierto. El chip se pinta AZUL con la
+     traducción (verde = mark vivo, rojo = no califica). Sigue sin aplicarse solo.
+     ── v2.43 ──
+     v2.43 (2026-07-22): NOMBRES VIEJOS en el preview del avance por lista (pareja del backend v2.40.0).
      Producción reporta con los nombres previos a la actualización del BOM ("terminé 419PL1",
      que hoy es 430PL1). Antes ese nombre moría como "no encontrado" y el cierre se perdía.
      Ahora el preview trae un bloque azul "NOMBRES VIEJOS" con la traducción, la fracción que
@@ -3348,21 +3356,42 @@ function avPoblarSelector() {
   avCargarIndice();
 }
 
+// v2.44: alias de nombres VIEJOS (producción reporta con los de antes del BOM).
+// Se deriva igual que en el backend: el id viejo de CAT_MARK_MERGE lleva el nombre
+// adentro ('SE-419PL1' -> '419PL1'). Sirve para (a) sugerirlos en el datalist y
+// (b) no pintarlos como chip inválido. Quien decide el destino real es el backend.
+let _avAlias = {};   // NOMBRE_VIEJO_UPPER -> { nuevoLabel, mark }
+
 async function avCargarIndice() {
   const val = (document.getElementById('av-proy-etapa') || {}).value || '';
-  _avIndex = [];
+  _avIndex = []; _avAlias = {};
   if (!val) { avActualizarSugerencias(); return; }
   const [proyecto, etapa] = val.split('|');
   try {
-    const [r, labels] = await Promise.all([
+    const [r, labels, dm] = await Promise.all([
       fetch(SCRIPT_URL + '?accion=listaLoteMarks&proyecto=' + encodeURIComponent(proyecto)).then(x => x.json()),
-      _cargarLabelsProyecto(proyecto)
+      _cargarLabelsProyecto(proyecto),
+      fetch(SCRIPT_URL + '?accion=listaMarkMerge&proyecto=' + encodeURIComponent(proyecto)).then(x => x.json()).catch(() => null)
     ]);
     _avIndex = ((r && r.marks) || [])
       .filter(m => String(m.estado_ot || '').toUpperCase() === 'EN_PROCESO')
       .filter(m => String(m.etapa || '').toUpperCase() === String(etapa).toUpperCase())
       .map(m => Object.assign({}, m, { label: labels[m.mark] || m.mark }));
-  } catch (e) { _avIndex = []; }
+    // labels vivos (para no tratar como alias un nombre que sigue existiendo)
+    const vivos = {};
+    Object.keys(labels || {}).forEach(mk => { vivos[String(labels[mk]).toUpperCase()] = mk; });
+    ((dm && dm.merges) || []).forEach(m => {
+      const o = String(m.old_canon || ''), n = String(m.new_canon || '');
+      if (o.indexOf('SE-') !== 0) return;                 // sólo SE- lleva nombre legible
+      const viejo = o.substring(3);
+      if (vivos[viejo.toUpperCase()]) return;             // el nombre sigue vivo
+      const nuevoLabel = labels[n];
+      if (!nuevoLabel) return;
+      const mkNuevo = vivos[String(nuevoLabel).toUpperCase()];
+      if (!mkNuevo) return;
+      _avAlias[viejo.toUpperCase()] = { nuevoLabel: nuevoLabel, mark: mkNuevo };
+    });
+  } catch (e) { _avIndex = []; _avAlias = {}; }
   avActualizarSugerencias();
 }
 
@@ -3378,10 +3407,23 @@ function avActualizarSugerencias() {
   const dl = document.getElementById('av-datalist');
   if (!dl) return;
   const vistos = {}, opts = [];
-  avElegibles().forEach(m => {
+  const elegibles = avElegibles();
+  elegibles.forEach(m => {
     if (vistos[m.label]) return;
     vistos[m.label] = true;
     opts.push(`<option value="${escapeAttr(m.label)}">${escapeHtml(m.folio)} · ×${m.qty}</option>`);
+  });
+  // v2.44: sugerir también los NOMBRES VIEJOS cuyo mark de hoy sí es elegible.
+  // Producción reporta con esos nombres; si no aparecen, parece que no se soportan.
+  const marksElegibles = {};
+  elegibles.forEach(m => { marksElegibles[m.mark] = m; });
+  Object.keys(_avAlias).forEach(viejo => {
+    const al = _avAlias[viejo];
+    const destino = marksElegibles[al.mark];
+    if (!destino) return;                                 // su mark no está abierto: no lo ofrezcas
+    if (vistos[viejo]) return;
+    vistos[viejo] = true;
+    opts.push(`<option value="${escapeAttr(viejo)}">nombre viejo → ${escapeHtml(al.nuevoLabel)} · ${escapeHtml(destino.folio)}</option>`);
   });
   dl.innerHTML = opts.join('');
   avRenderChips();
@@ -3421,13 +3463,17 @@ function avRenderChips() {
   avElegibles().forEach(m => { validos[String(m.label).toUpperCase()] = true; });
   box.innerHTML = _avChips.map((c, i) => {
     const ok = validos[c.toUpperCase()];
-    // Invalido = no esta entre las elegibles. NO se descarta: el preview del backend
-    // explica por que (sin OT en proceso, ya cerrado, no existe...).
-    const bg = ok ? '#EAF3DE' : '#FCEBEB';
-    const bd = ok ? '#3B6D11' : '#A32D2D';
-    return `<span style="display:inline-flex;align-items:center;gap:4px;background:${bg};border:1px solid ${bd};
+    // v2.44: tres estados de chip. VERDE = mark vivo y elegible. AZUL = nombre viejo
+    // reconocido (se traduce, pero el backend NO lo aplica solo). ROJO = no calificado;
+    // NO se descarta — el preview explica por qué (sin OT en proceso, ya cerrado, etc).
+    const alias = !ok ? _avAlias[c.toUpperCase()] : null;
+    const bg = ok ? '#EAF3DE' : (alias ? '#E8F0F8' : '#FCEBEB');
+    const bd = ok ? '#3B6D11' : (alias ? '#2A5A8C' : '#A32D2D');
+    const txt = alias ? `${escapeHtml(c)} → ${escapeHtml(alias.nuevoLabel)}` : escapeHtml(c);
+    return `<span title="${alias ? 'Nombre viejo — hoy es ' + escapeAttr(alias.nuevoLabel) : ''}"
+      style="display:inline-flex;align-items:center;gap:4px;background:${bg};border:1px solid ${bd};
       border-radius:12px;padding:2px 8px;font-size:11px;font-family:'Courier New',monospace">
-      ${escapeHtml(c)}<b style="cursor:pointer" onclick="avQuitarChip(${i})">×</b></span>`;
+      ${txt}<b style="cursor:pointer" onclick="avQuitarChip(${i})">×</b></span>`;
   }).join('') + (_avChips.length ? `<span style="font-size:11px;color:#888780;align-self:center">${_avChips.length} pieza(s)</span>` : '');
 }
 
